@@ -1,0 +1,44 @@
+# NOTE: The actual service registration (hass.services.async_register calls for
+# send_image and send_animation) is wired in __init__.py in a follow-up task.
+# This file provides only the UI descriptor schema used by the Home Assistant
+# frontend and developer tools to describe the services.
+
+send_image:
+  name: Send Image
+  description: >-
+    Send a still image to the CoolLEDX LED matrix sign. The image is loaded
+    from the given local filesystem path and rendered onto the sign's pixel
+    grid.
+  target:
+    entity:
+      domain: coolledx
+  fields:
+    path:
+      name: File path
+      description: >-
+        Local path to an image file (PNG, JPEG, BMP, etc.) accessible by
+        Home Assistant. The image will be scaled to fit the sign's pixel
+        dimensions.
+      required: true
+      example: /config/www/my-image.png
+      selector:
+        text: {}
+
+send_animation:
+  name: Send Animation
+  description: >-
+    Send an animation to the CoolLEDX LED matrix sign. Accepts a .jt
+    animation file (native CoolLEDX format) or an animated GIF.
+  target:
+    entity:
+      domain: coolledx
+  fields:
+    path:
+      name: File path
+      description: >-
+        Local path to a .jt animation or animated GIF file accessible by
+        Home Assistant (e.g. /config/www/my-animation.gif).
+      required: true
+      example: /config/www/my-animation.gif
+      selector:
+        text: {}
