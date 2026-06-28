@@ -31,7 +31,7 @@ class CoolLEDXSpeed(CoolLEDXEntity, NumberEntity):
     the coordinator.
     """
 
-    _attr_name = "Speed"
+    _attr_translation_key = "speed"
     _attr_native_min_value = 0.0
     _attr_native_max_value = 255.0
     _attr_native_step = 1.0

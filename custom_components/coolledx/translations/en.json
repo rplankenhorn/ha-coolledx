@@ -1,0 +1,53 @@
+{
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "bluetooth_confirm": {
+        "description": "Do you want to set up {name}?"
+      },
+      "user": {
+        "description": "Choose a CoolLEDX device to set up.",
+        "data": {
+          "address": "Device"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "Device is already configured",
+      "no_devices_found": "No unconfigured CoolLEDX devices found"
+    }
+  },
+  "entity": {
+    "text": {
+      "message": { "name": "Message" }
+    },
+    "number": {
+      "speed": { "name": "Speed" }
+    },
+    "select": {
+      "display_mode": { "name": "Display mode" }
+    }
+  },
+  "services": {
+    "send_image": {
+      "name": "Send image",
+      "description": "Sends a still image file to the sign.",
+      "fields": {
+        "path": {
+          "name": "Path",
+          "description": "Absolute path to an image file readable by Home Assistant."
+        }
+      }
+    },
+    "send_animation": {
+      "name": "Send animation",
+      "description": "Sends an animation file (.jt or GIF) to the sign.",
+      "fields": {
+        "path": {
+          "name": "Path",
+          "description": "Absolute path to a .jt or GIF animation file readable by Home Assistant."
+        }
+      }
+    }
+  }
+}

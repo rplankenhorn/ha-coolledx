@@ -57,7 +57,7 @@ class CoolLEDXText(CoolLEDXEntity, TextEntity):
     value on the coordinator.
     """
 
-    _attr_name = "Message"
+    _attr_translation_key = "message"
     _attr_native_max = 255
     _attr_mode = TextMode.TEXT
 
