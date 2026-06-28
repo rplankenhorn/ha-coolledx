@@ -1,0 +1,14 @@
+{
+  "domain": "coolledx",
+  "name": "CoolLEDX LED Sign",
+  "version": "0.1.0",
+  "codeowners": ["@rplankenhorn"],
+  "documentation": "https://github.com/rplankenhorn/ha-coolledx",
+  "issue_tracker": "https://github.com/rplankenhorn/ha-coolledx/issues",
+  "config_flow": true,
+  "iot_class": "local_push",
+  "integration_type": "device",
+  "dependencies": ["bluetooth_adapters"],
+  "requirements": ["bleak-retry-connector>=3.6.0", "Pillow>=10.0.0"],
+  "bluetooth": [{ "local_name": "CoolLED*" }]
+}
