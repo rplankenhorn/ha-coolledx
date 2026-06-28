@@ -1,4 +1,36 @@
-
 # Dolt database files (added by bd init)
 .dolt/
 *.db
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Home Assistant / dev
+config/
+.HA_VERSION
+home-assistant.log*
+
+# BLE capture artifacts — may contain device MAC; never commit
+*.pcap
+*.pcapng
+*.log.btsnoop
+btsnoop*.log
+*.apk
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
