@@ -18,9 +18,8 @@ import re
 from pathlib import Path
 from typing import Union
 
-from bleak import BleakClientWithServiceCache
 from bleak.backends.device import BLEDevice
-from bleak_retry_connector import establish_connection
+from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
 from PIL import Image, ImageDraw, ImageFont
 
 _LOGGER = logging.getLogger(__name__)
