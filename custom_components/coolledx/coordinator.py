@@ -29,7 +29,8 @@ def parse_geometry(
     The CoolLEDX manufacturer-data value bytes encode device geometry:
       index [6]   = height in pixels
       index [7:9] = width in pixels (big-endian uint16)
-      index [9]   = color_mode  (0=mono, 1=seven-colour, 2=RGB)
+      index [9]   = color_mode  (0=mono, 1=seven-colour, 2=RGB,
+                    3=full-colour as reported by CoolLEDUX hardware)
 
     Iterates over all manufacturer IDs present in the advertisement because
     the ID itself is not standardised across device revisions.
@@ -45,8 +46,10 @@ def parse_geometry(
             height: int = data[6]
             width: int = int.from_bytes(data[7:9], "big")
             color_mode: int = data[9]
-            # Sanity-check values before accepting them.
-            if height > 0 and width > 0 and color_mode in (0, 1, 2):
+            # Sanity-check values before accepting them.  CoolLEDUX signs
+            # report color_mode 3 (full colour); the renderer always emits RGB
+            # bitfields, so any 0..3 mode is safe to accept here.
+            if height > 0 and width > 0 and 0 <= color_mode <= 3:
                 return height, width, color_mode
         except (IndexError, ValueError, TypeError):
             _LOGGER.debug(

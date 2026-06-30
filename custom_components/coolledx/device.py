@@ -52,6 +52,7 @@ CMD_INIT = 0x23        # initialize (send with 0x01)
 COLOR_MODE_MONO = 0x00   # single-colour
 COLOR_MODE_SEVEN = 0x01  # 7-colour palette
 COLOR_MODE_RGB = 0x02    # full RGB
+COLOR_MODE_FULL = 0x03   # full-colour reported by CoolLEDUX (rendered as RGB)
 
 # ---------------------------------------------------------------------------
 # Protocol / render constants

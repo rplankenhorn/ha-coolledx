@@ -34,3 +34,9 @@ btsnoop*.log
 .idea/
 .vscode/
 .DS_Store
+
+# Local BLE scan screenshots (may leak device MAC — keep out of git)
+IMG_*.PNG
+IMG_*.png
+IMG_*.jpg
+IMG_*.jpeg
