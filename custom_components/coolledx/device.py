@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Union
 
 from bleak.backends.device import BLEDevice
+from bleak.exc import BleakError
 from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
 from PIL import Image, ImageDraw, ImageFont
 
@@ -639,7 +640,32 @@ class CoolLEDXDevice:
                 WRITE_CHAR_UUID,
                 self._name,
             )
+        # The sign gates command processing on an active notification
+        # subscription: until a client subscribes to FFF1, every write is
+        # silently dropped (no error, no display change).  Subscribe here so
+        # the device accepts and ACKs subsequent commands.  The notifications
+        # themselves are command echoes/ACKs we don't currently act on.
+        if self._write_char is not None:
+            try:
+                await self._client.start_notify(
+                    WRITE_CHAR_UUID, self._handle_notification
+                )
+            except (BleakError, EOFError) as err:
+                _LOGGER.warning(
+                    "Failed to subscribe to notifications on %s (%s); the sign "
+                    "may ignore commands",
+                    self._name,
+                    err,
+                )
         _LOGGER.debug("Connected to %s", self._name)
+
+    def _handle_notification(self, _char: object, data: bytearray) -> None:
+        """Handle a notification from the sign (command echo / ACK).
+
+        We don't currently parse these, but an active subscription is required
+        for the device to process writes at all (see :meth:`connect`).
+        """
+        _LOGGER.debug("Notification from %s: %s", self._name, data.hex())
 
     async def disconnect(self) -> None:
         """Disconnect from the BLE device."""
