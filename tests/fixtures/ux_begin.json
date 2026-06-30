@@ -1,0 +1,13 @@
+{
+  "format_notes": "getStartDataForProgram(progData, i, i2, i3) builds the 'begin program' command: 02 + CRC4BE(progData) + len4BE(progData) + 1B(i) + 1B(i2) + 1B(i3), framed (01 + escape(len2BE + body) + 03). Each case gives prog_data_hex (lowercase contiguous hex of progData), i/i2/i3 (sample params: i=index, i2/i3 are device/show-count style fields per the decompiled CLog message wording - exact semantics don't affect this oracle, they're just raw bytes), and output_hex: the single complete framed frame.",
+  "cases": [
+    {
+      "name": "small_progdata_20_bytes",
+      "prog_data_hex": "000102030405060708090a0b0c0d0e0f10111213",
+      "i": 0,
+      "i2": 1,
+      "i3": 5,
+      "output_hex": "01000c0206b31f4e99000000140002050503"
+    }
+  ]
+}
