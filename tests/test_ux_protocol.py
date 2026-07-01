@@ -278,3 +278,186 @@ class TestBuildImageProgram:
         assert result[0] != 0x01  # not frame-wrapped
         expected_len_prefix = (len(result)).to_bytes(4, "big")
         assert result[0:4] == expected_len_prefix
+
+
+# ===========================================================================
+# wrap_program
+# ===========================================================================
+
+
+class TestWrapProgram:
+    """getDataWithProgram: progData = 8x00 + contentNumber(1B) + 00 + body."""
+
+    def test_exact_byte_layout(self, ux_module):
+        body = bytes([0xAA, 0xBB, 0xCC])
+        result = ux_module.wrap_program(body, content_number=1)
+        expected = bytes(8) + bytes([1]) + bytes([0]) + body
+        assert result == expected
+
+    def test_default_content_number_is_one(self, ux_module):
+        body = bytes([0x01, 0x02])
+        result = ux_module.wrap_program(body)
+        assert result[8] == 1
+
+    def test_content_number_is_configurable(self, ux_module):
+        body = bytes([0x01, 0x02])
+        result = ux_module.wrap_program(body, content_number=3)
+        assert result[8] == 3
+
+    def test_preamble_is_eight_zero_bytes(self, ux_module):
+        body = bytes([0x99])
+        result = ux_module.wrap_program(body)
+        assert result[0:8] == bytes(8)
+
+    def test_ninth_byte_after_content_number_is_zero(self, ux_module):
+        body = bytes([0x99])
+        result = ux_module.wrap_program(body)
+        assert result[9] == 0
+
+    def test_body_follows_the_10_byte_header(self, ux_module):
+        body = bytes([0x11, 0x22, 0x33, 0x44])
+        result = ux_module.wrap_program(body)
+        assert result[10:] == body
+        assert len(result) == 10 + len(body)
+
+
+# ===========================================================================
+# build_program_upload
+# ===========================================================================
+
+
+class TestBuildProgramUpload:
+    """build_program_upload: assembles begin + LZSS-compressed content
+    packets for a single-image program upload."""
+
+    def _pixels(self, width, height, argb=0xFFFF0000):
+        return [argb] * (width * height)
+
+    def test_returns_begin_and_content_tuple(self, ux_module):
+        begin, content = ux_module.build_program_upload(
+            self._pixels(96, 16), 96, 16
+        )
+        assert isinstance(begin, (bytes, bytearray))
+        assert isinstance(content, list)
+
+    def test_begin_is_a_valid_frame(self, ux_module):
+        begin, _content = ux_module.build_program_upload(
+            self._pixels(96, 16), 96, 16
+        )
+        assert begin[0] == 0x01
+        assert begin[-1] == 0x03
+
+    def test_content_is_nonempty_list_of_frames(self, ux_module):
+        _begin, content = ux_module.build_program_upload(
+            self._pixels(96, 16), 96, 16
+        )
+        assert len(content) >= 1
+        for frame in content:
+            assert frame[0] == 0x01
+            assert frame[-1] == 0x03
+
+    def test_begin_crc_matches_wrapped_uncompressed_program(self, ux_module):
+        # begin's embedded CRC/length must be computed over the *wrapped*
+        # (uncompressed) program data -- not the compressed content bytes.
+        width, height = 96, 16
+        pixels = self._pixels(width, height)
+        begin, _content = ux_module.build_program_upload(pixels, width, height)
+
+        body = ux_module.build_image_program(pixels, width, height)
+        prog = ux_module.wrap_program(body, content_number=1)
+        expected_begin = ux_module.build_begin(prog, 0, 1, 0)
+        assert begin == expected_begin
+
+    def test_content_frames_use_command_0x03(self, ux_module):
+        width, height = 8, 8
+        pixels = self._pixels(width, height)
+        _begin, content = ux_module.build_program_upload(pixels, width, height)
+
+        body = ux_module.build_image_program(pixels, width, height)
+        prog = ux_module.wrap_program(body, content_number=1)
+        compressed = ux_module.lzss_compress(prog)
+        expected_content = ux_module.build_ux_packet(compressed, 0x03, 1004)
+        assert content == expected_content
+
+    def test_program_index_count_show_count_forwarded_to_begin(self, ux_module):
+        width, height = 8, 8
+        pixels = self._pixels(width, height)
+        begin, _content = ux_module.build_program_upload(
+            pixels, width, height, program_index=2, program_count=5, show_count=7
+        )
+        body = ux_module.build_image_program(pixels, width, height)
+        prog = ux_module.wrap_program(body, content_number=1)
+        expected_begin = ux_module.build_begin(prog, 2, 5, 7)
+        assert begin == expected_begin
+
+    def test_image_kwargs_are_forwarded(self, ux_module):
+        width, height = 8, 8
+        pixels = self._pixels(width, height)
+        begin, _content = ux_module.build_program_upload(
+            pixels, width, height, mode=1, speed=10, stayTime=1
+        )
+        body = ux_module.build_image_program(
+            pixels, width, height, mode=1, speed=10, stayTime=1
+        )
+        prog = ux_module.wrap_program(body, content_number=1)
+        expected_begin = ux_module.build_begin(prog, 0, 1, 0)
+        assert begin == expected_begin
+
+    def test_small_pkg_size_yields_multiple_content_chunks(self, ux_module):
+        width, height = 96, 16
+        pixels = self._pixels(width, height)
+        _begin, content = ux_module.build_program_upload(
+            pixels, width, height, pkg_size=64
+        )
+        assert len(content) > 1
+
+
+# ===========================================================================
+# parse_notification
+# ===========================================================================
+
+
+class TestParseNotification:
+    """recoverData: unframe a device notification -> (command, status)."""
+
+    def test_switch_echo_ack(self, ux_module):
+        # Real observed notification: 0x09 command echo.
+        frame = bytes.fromhex("0100020609020503")
+        cmd, status = ux_module.parse_notification(frame)
+        assert cmd == 0x09
+
+    def test_text_data_error_ack(self, ux_module):
+        # Real observed notification: DATA_ERROR (status 0x03) for
+        # response command 0x02.
+        frame = bytes.fromhex("010002060206020703")
+        cmd, status = ux_module.parse_notification(frame)
+        assert (cmd, status) == (0x02, 0x03)
+
+    def test_round_trip_success_ack(self, ux_module):
+        # Hand-build a frame via encode_frame and confirm parse inverts it.
+        # Trailing byte (status) deliberately avoids 0x01/0x02/0x03 so that
+        # escape()'s own trailing-control-byte quirk (a send-direction-only
+        # wrinkle, see escape()'s docstring) doesn't come into play.
+        payload = bytes([0x03, 0x00])  # cmd=image, status=SUCCESS
+        frame = ux_module.encode_frame(payload)
+        assert ux_module.parse_notification(frame) == (0x03, 0x00)
+
+    def test_round_trip_various_commands(self, ux_module):
+        for cmd, status in [(0x09, 0x00), (0x02, 0x04), (0x06, 0x05), (0x00, 0x00)]:
+            payload = bytes([cmd, status])
+            frame = ux_module.encode_frame(payload)
+            assert ux_module.parse_notification(frame) == (cmd, status)
+
+    def test_content_ack_multibyte_payload(self, ux_module):
+        # Real observed content-packet ACK: payload is 5 bytes
+        # [0x03, 0x00, 0x00, 0x00, 0x00] (command 0x03, status 0x00, then
+        # 3 trailing progress/index bytes). Command is the FIRST payload
+        # byte and status the SECOND -- NOT the last two bytes.
+        frame = bytes.fromhex("01000502070000000003")
+        assert ux_module.parse_notification(frame) == (0x03, 0x00)
+
+    def test_malformed_frame_missing_markers_returns_none_none(self, ux_module):
+        assert ux_module.parse_notification(b"\x00\x01\x02") == (None, None)
+
+    def test_too_short_frame_returns_none_none(self, ux_module):
+        assert ux_module.parse_notification(bytes.fromhex("0103")) == (None, None)

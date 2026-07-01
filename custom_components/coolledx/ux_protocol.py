@@ -615,3 +615,155 @@ def build_image_program(
     out += (len(body) + 4).to_bytes(4, byteorder="big")
     out += body
     return bytes(out)
+
+
+# ===========================================================================
+# Program wrapper  (getDataWithProgram)
+# ===========================================================================
+
+
+def wrap_program(body: bytes, content_number: int = 1) -> bytes:
+    """Wrap a graffiti/image program body as full "program" data.
+
+    Ported from ``DeviceManager.getDataWithProgram``::
+
+        8 x 0x00
+        contentNumber (1 byte) -- number of combine programs (1 for a
+                                   single image/graffiti body)
+        0x00
+        body
+
+    Args:
+        body:           Unframed graffiti/image program body, e.g. the
+                         output of :func:`build_image_program`.
+        content_number: Number of combine programs bundled in *body*.
+
+    Returns:
+        Wrapped program data bytes.
+    """
+    return b"\x00" * 8 + bytes([content_number & 0xFF]) + b"\x00" + body
+
+
+# ===========================================================================
+# Full program upload  (begin + compressed content packets)
+# ===========================================================================
+
+
+def build_program_upload(
+    pixels_argb: list[int],
+    width: int,
+    height: int,
+    *,
+    program_index: int = 0,
+    program_count: int = 1,
+    show_count: int = 0,
+    pkg_size: int = 1004,
+    **image_kwargs,
+) -> tuple[bytes, list[bytes]]:
+    """Build the full two-phase program upload for a single image.
+
+    Combines :func:`build_image_program`, :func:`wrap_program`,
+    :func:`build_begin`, and :func:`build_ux_packet` (with LZSS
+    compression) into the ``(begin_frame, content_frames)`` pair the
+    device expects: write ``begin_frame`` first and wait for its ACK,
+    then write each of ``content_frames`` in order, waiting for an ACK
+    after each one.
+
+    Args:
+        pixels_argb:    Row-major list of 0xAARRGGBB pixel values, length
+                         ``width * height``.
+        width:          Image width in pixels.
+        height:         Image height in pixels.
+        program_index:  Index byte passed to :func:`build_begin` as ``i``.
+        program_count:  Program-count byte passed to :func:`build_begin`
+                         as ``i2``.
+        show_count:     Show-count byte passed to :func:`build_begin` as
+                         ``i3``.
+        pkg_size:       Maximum bytes per content chunk (see
+                         :func:`build_ux_packet`).
+        **image_kwargs: Extra keyword arguments forwarded to
+                         :func:`build_image_program` (``layerType``,
+                         ``mode``, ``speed``, ``stayTime``,
+                         ``startColumn``, ``startRow``).
+
+    Returns:
+        ``(begin_frame, content_frames)`` -- the framed "begin program"
+        command and a list of framed, LZSS-compressed content chunks.
+    """
+    body = build_image_program(pixels_argb, width, height, **image_kwargs)
+    prog = wrap_program(body, content_number=1)
+    begin = build_begin(prog, program_index, program_count, show_count)
+    compressed = lzss_compress(prog)
+    content = build_ux_packet(compressed, 0x03, pkg_size)
+    return begin, content
+
+
+# ===========================================================================
+# Notification parsing  (recoverData)
+# ===========================================================================
+
+
+def parse_notification(frame: bytes) -> tuple[int | None, int | None]:
+    """Unframe a device notification and extract ``(command, status)``.
+
+    Ported from the decompiled ``recoverData``: strips the leading
+    ``0x01``/trailing ``0x03`` frame markers, reverses the escape
+    (``0x02, X`` -> ``X ^ 4``), drops the 2-byte length prefix, and
+    returns the **first two** bytes of the recovered payload as
+    ``(response_command, status_code)``.  The command is always the first
+    payload byte; simple-command ACKs carry a 2-byte payload
+    ``[cmd, echoed-value]`` while content-packet ACKs carry a longer
+    payload ``[cmd, status, index/progress...]`` — so the last two bytes
+    are *not* the status.
+
+    Status ``0x00`` means success; see the module-level ``ErrorCode``
+    values (0x01 TRANSMISSION_FAILED, 0x02 DEVICE_ABNORMALITY, 0x03
+    DATA_ERROR, 0x04 DATA_LENGTH_ERROR, 0x05 DATA_ID_ERROR, 0x06
+    DATA_CHECKSUM_ERROR) for the meaning of non-zero values.
+
+    Args:
+        frame: Raw notification bytes as received from the BLE
+               characteristic (including the ``0x01``/``0x03`` framing).
+
+    Returns:
+        ``(response_command, status_code)``, or ``(None, None)`` if
+        *frame* is not a well-formed frame (missing markers, or too
+        short to contain a length prefix + 2-byte payload).
+    """
+    if len(frame) < 2 or frame[0] != 0x01 or frame[-1] != 0x03:
+        return (None, None)
+
+    middle = frame[1:-1]
+    out = bytearray()
+    i = 0
+    n = len(middle)
+    while i < n:
+        b = middle[i]
+        if b == _ESCAPE_MARKER and i + 1 < n:
+            out.append(middle[i + 1] ^ 4)
+            i += 2
+        else:
+            out.append(b)
+            i += 1
+
+    # First 2 bytes of `out` are the length prefix; the rest is payload.
+    # The command is payload[0] and status payload[1]; content-packet ACKs
+    # append index/progress bytes, so the last two bytes are NOT the status.
+    payload = out[2:]
+    if len(payload) < 2:
+        return (None, None)
+
+    return payload[0], payload[1]
+
+
+# ===========================================================================
+# Device error codes  (ErrorCode)
+# ===========================================================================
+
+ERROR_SUCCESS = 0x00
+ERROR_TRANSMISSION_FAILED = 0x01
+ERROR_DEVICE_ABNORMALITY = 0x02
+ERROR_DATA_ERROR = 0x03
+ERROR_DATA_LENGTH_ERROR = 0x04
+ERROR_DATA_ID_ERROR = 0x05
+ERROR_DATA_CHECKSUM_ERROR = 0x06

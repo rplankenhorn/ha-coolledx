@@ -23,6 +23,19 @@ from bleak.exc import BleakError
 from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
 from PIL import Image, ImageDraw, ImageFont
 
+try:
+    from . import ux_protocol
+except ImportError:  # pragma: no cover - loaded standalone (unit tests via
+    # importlib.util.spec_from_file_location bypass the package __init__, so
+    # there's no parent package for a relative import to resolve against).
+    import importlib.util as _importlib_util
+
+    _UX_PROTOCOL_SPEC = _importlib_util.spec_from_file_location(
+        "coolledx_ux_protocol", Path(__file__).resolve().parent / "ux_protocol.py"
+    )
+    ux_protocol = _importlib_util.module_from_spec(_UX_PROTOCOL_SPEC)
+    _UX_PROTOCOL_SPEC.loader.exec_module(ux_protocol)
+
 _LOGGER = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -263,6 +276,96 @@ def _image_to_rgb_bitfields(
     return barr_r, barr_g, barr_b
 
 
+def _image_to_argb_pixels(
+    image: Image.Image,
+    bg_color: tuple[int, int, int] = (0, 0, 0),
+) -> list[int]:
+    """Flatten a PIL image onto *bg_color* into a row-major ARGB pixel list.
+
+    Used by the CoolLEDUX send path: any alpha channel is composited onto
+    *bg_color* first, then every pixel is packed as ``0xAARRGGBB`` (alpha
+    forced to ``0xFF``) in row-major order (``index = row * width + col``),
+    matching the input format expected by
+    ``ux_protocol.build_image_program``.
+
+    Args:
+        image:    Source image (any mode; converted to RGBA internally).
+        bg_color: Background colour alpha is composited onto.
+
+    Returns:
+        Row-major list of ``0xAARRGGBB`` pixel ints, length
+        ``image.width * image.height``.
+    """
+    img = image.convert("RGBA")
+    bg = Image.new("RGBA", img.size, (*bg_color, 255))
+    img = Image.alpha_composite(bg, img).convert("RGB")
+    width, height = img.size
+
+    pixels: list[int] = []
+    for y in range(height):
+        for x in range(width):
+            r, g, b = img.getpixel((x, y))
+            pixels.append((0xFF << 24) | (r << 16) | (g << 8) | b)
+    return pixels
+
+
+def _render_text_image(
+    text: str,
+    sign_height: int,
+    sign_width: int,
+    color: tuple[int, int, int] = (255, 255, 255),
+    bg_color: tuple[int, int, int] = (0, 0, 0),
+    font_path: str | None = None,
+    font_size: int | None = None,
+) -> Image.Image:
+    """Rasterise *text* to an RGBA image, cropped to its bounding box.
+
+    This is the shared Pillow drawing/font-loading step behind both
+    :func:`render_text_payload` (CoolLEDX 1-bit bitfield payload) and the
+    CoolLEDUX ARGB-pixel send path in :class:`CoolLEDXDevice` — the actual
+    rasterisation logic lives here exactly once so both dialects render
+    text identically.
+
+    Args:
+        text:       Text string to display.
+        sign_height:Sign height in pixels.
+        sign_width: Sign width in pixels (used as minimum canvas width).
+        color:      RGB text colour.
+        bg_color:   RGB background colour.
+        font_path:  Optional path to a TrueType font (.ttf/.otf).
+        font_size:  Font size in points; defaults to ``sign_height - 2``.
+
+    Returns:
+        Cropped RGBA image, ``(text_width, sign_height)`` in size.
+    """
+    if font_size is None:
+        font_size = max(sign_height - 2, 8)
+
+    # Render text onto a generously-sized RGBA canvas (matches upstream).
+    canvas_w = max(2048, sign_width * 4)
+    img = Image.new("RGBA", (canvas_w, sign_height + 8), (*bg_color, 255))
+    draw = ImageDraw.Draw(img)
+
+    try:
+        font: ImageFont.FreeTypeFont | ImageFont.ImageFont
+        if font_path:
+            font = ImageFont.truetype(font_path, font_size)
+        else:
+            font = ImageFont.load_default(font_size)
+    except Exception:  # noqa: BLE001
+        font = ImageFont.load_default()
+
+    r_c, g_c, b_c = color
+    # y_offset=1 matches upstream render_text_to_image
+    draw.text((0, 1), text, (r_c, g_c, b_c), font=font)
+    bbox = draw.textbbox((0, 0), text, font=font)
+    text_width = max(bbox[2], 1)
+    del draw
+
+    # Crop to text bounds, then ensure height == sign_height
+    return img.crop((0, 0, text_width, sign_height))
+
+
 def render_text_payload(
     text: str,
     sign_height: int,
@@ -300,35 +403,10 @@ def render_text_payload(
     Returns:
         Raw payload bytes.
     """
-    if font_size is None:
-        font_size = max(sign_height - 2, 8)
-
-    # Render text onto a generously-sized RGBA canvas (matches upstream).
-    canvas_w = max(2048, sign_width * 4)
-    img = Image.new("RGBA", (canvas_w, sign_height + 8), (*bg_color, 255))
-    draw = ImageDraw.Draw(img)
-
-    try:
-        font: ImageFont.FreeTypeFont | ImageFont.ImageFont
-        if font_path:
-            font = ImageFont.truetype(font_path, font_size)
-        else:
-            font = ImageFont.load_default(font_size)
-    except Exception:  # noqa: BLE001
-        font = ImageFont.load_default()
-
-    r_c, g_c, b_c = color
-    # y_offset=1 matches upstream render_text_to_image
-    draw.text((0, 1), text, (r_c, g_c, b_c), font=font)
-    bbox = draw.textbbox((0, 0), text, font=font)
-    text_width = max(bbox[2], 1)
-    del draw
-
-    # Crop to text bounds, then ensure height == sign_height
-    img = img.crop((0, 0, text_width, sign_height))
-
-    output_width = text_width
-    output_height = sign_height
+    img = _render_text_image(
+        text, sign_height, sign_width, color, bg_color, font_path, font_size
+    )
+    output_width, output_height = img.size
 
     barr_r, barr_g, barr_b = _image_to_rgb_bitfields(
         img,
@@ -579,9 +657,28 @@ class CoolLEDXDevice:
         self._width = width
         self._color_mode = color_mode
 
+        # CoolLEDUX ("Rayhome Devil Eyes" full-colour) devices speak the
+        # two-phase compressed program-upload protocol in ux_protocol.py
+        # instead of the classic CoolLEDX chunked-payload protocol; the
+        # classic protocol's DATA_ERROR rejection on these devices is what
+        # necessitates this separate send path (see ux_protocol.py docs).
+        self._is_ux = self._color_mode == COLOR_MODE_FULL or (
+            self._name or ""
+        ).startswith("CoolLEDUX")
+
         self._client: BleakClientWithServiceCache | None = None
         self._write_char = None  # cached BleakGATTCharacteristic
         self._lock: asyncio.Lock = asyncio.Lock()
+
+        # Pending ACK future for the UX send path — resolved by
+        # _handle_notification with the (command, status) tuple decoded via
+        # ux_protocol.parse_notification.  ``_ack_expected_cmd`` is the response
+        # command byte we are waiting for; the sign echoes the command of the
+        # frame it is ACKing, so a notification whose command differs (e.g. a
+        # stale turn_on/brightness echo still in flight from an earlier
+        # _send_simple) must NOT resolve the future.  ``None`` accepts any.
+        self._ack_future: asyncio.Future[tuple[int | None, int | None]] | None = None
+        self._ack_expected_cmd: int | None = None
 
         # State for set_color (re-render current text with new colour)
         self._current_text: str | None = None
@@ -662,10 +759,30 @@ class CoolLEDXDevice:
     def _handle_notification(self, _char: object, data: bytearray) -> None:
         """Handle a notification from the sign (command echo / ACK).
 
-        We don't currently parse these, but an active subscription is required
-        for the device to process writes at all (see :meth:`connect`).
+        An active subscription is required for the device to process writes
+        at all (see :meth:`connect`). On CoolLEDUX devices, notifications are
+        also ACKs for the two-phase program-upload send path: each one is
+        parsed via :func:`ux_protocol.parse_notification` and used to resolve
+        the currently-pending :attr:`_ack_future` (if any), unblocking
+        :meth:`_send_program_upload`.
         """
         _LOGGER.debug("Notification from %s: %s", self._name, data.hex())
+        future = self._ack_future
+        if future is None or future.done():
+            return
+        cmd, status = ux_protocol.parse_notification(bytes(data))
+        if self._ack_expected_cmd is not None and cmd != self._ack_expected_cmd:
+            # Stale/echo notification for a different command — ignore it so it
+            # can't be mistaken for the ACK of the frame we're currently
+            # awaiting (see _ack_expected_cmd).
+            _LOGGER.debug(
+                "Ignoring notification cmd=%s (awaiting cmd=%s) from %s",
+                cmd,
+                self._ack_expected_cmd,
+                self._name,
+            )
+            return
+        future.set_result((cmd, status))
 
     async def disconnect(self) -> None:
         """Disconnect from the BLE device."""
@@ -729,6 +846,123 @@ class CoolLEDXDevice:
     async def _send_simple(self, payload: bytes) -> None:
         """Frame *payload* as a single packet and write it."""
         await self._write_chunks([encode_frame(payload)])
+
+    # ------------------------------------------------------------------
+    # CoolLEDUX two-phase program-upload send path
+    # ------------------------------------------------------------------
+
+    async def _ux_write_and_await_ack(
+        self, frame: bytes, expected_cmd: int | None = None, timeout: float = 5.0
+    ) -> tuple[int | None, int | None]:
+        """Write one already-framed UX-protocol frame and await its ACK.
+
+        Must be called while already holding :attr:`_lock` — this writes
+        directly via ``write_gatt_char`` rather than going through
+        :meth:`_write_chunks` (which takes the lock itself), so that the
+        whole begin+content handshake in :meth:`_send_program_upload` can be
+        serialised as a single critical section.
+
+        Args:
+            frame:   Fully-framed bytes to write (e.g. from
+                     ``ux_protocol.build_program_upload``).
+            timeout: Seconds to wait for the device's ACK notification.
+
+        Returns:
+            The ``(response_command, status_code)`` tuple decoded from the
+            device's ACK notification via
+            :func:`ux_protocol.parse_notification`.
+
+        Raises:
+            asyncio.TimeoutError: If no ACK notification arrives within
+                                   *timeout* seconds.
+        """
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[tuple[int | None, int | None]] = loop.create_future()
+        self._ack_future = future
+        self._ack_expected_cmd = expected_cmd
+        try:
+            await self._client.write_gatt_char(
+                WRITE_CHAR_UUID, bytearray(frame), response=False
+            )
+            return await asyncio.wait_for(future, timeout=timeout)
+        finally:
+            if self._ack_future is future:
+                self._ack_future = None
+                self._ack_expected_cmd = None
+
+    async def _send_program_upload(
+        self,
+        pixels_argb: list[int],
+        width: int,
+        height: int,
+        **kw,
+    ) -> None:
+        """Upload a single-image program to a CoolLEDUX device.
+
+        Builds the "begin program" + LZSS-compressed content frames via
+        :func:`ux_protocol.build_program_upload` and sends them in order:
+        the begin frame first (its ACK status must be 0, or this raises
+        immediately — the device won't accept content packets otherwise),
+        then each content frame, retried up to 3 times on ACK timeout or a
+        non-zero status (matching the official app's behaviour).
+
+        Args:
+            pixels_argb: Row-major list of 0xAARRGGBB pixel values, length
+                         ``width * height``.
+            width:       Image width in pixels.
+            height:      Image height in pixels.
+            **kw:        Extra keyword arguments forwarded to
+                         ``ux_protocol.build_program_upload`` (e.g.
+                         ``mode``, ``speed``, ``stayTime``).
+
+        Raises:
+            RuntimeError: If not connected, the begin-program ACK reports a
+                          non-zero status, or a content frame still fails
+                          after 3 attempts.
+        """
+        begin, content = ux_protocol.build_program_upload(
+            pixels_argb, width, height, **kw
+        )
+
+        async with self._lock:
+            if not self.is_connected or self._client is None:
+                raise RuntimeError(f"Not connected to {self._name}")
+
+            _cmd, status = await self._ux_write_and_await_ack(
+                begin, expected_cmd=0x02
+            )
+            # Begin-program ACK status is a directive, not pass/fail:
+            #   0 -> device lacks this program, send the content packets
+            #   1 -> device already has this exact program (CRC match); the
+            #        content is redundant, so we're done
+            #   other -> a real error (see ux_protocol ErrorCode values)
+            if status == 1:
+                return
+            if status != 0:
+                raise RuntimeError(
+                    f"{self._name}: begin-program ACK failed (status={status})"
+                )
+
+            for idx, frame in enumerate(content):
+                last_error: Exception | None = None
+                for _attempt in range(3):
+                    try:
+                        _cmd, status = await self._ux_write_and_await_ack(
+                            frame, expected_cmd=0x03
+                        )
+                    except asyncio.TimeoutError as exc:
+                        last_error = exc
+                        continue
+                    if status == 0:
+                        break
+                    last_error = RuntimeError(
+                        f"{self._name}: content chunk {idx} ACK failed "
+                        f"(status={status})"
+                    )
+                else:
+                    raise last_error or RuntimeError(
+                        f"{self._name}: content chunk {idx} failed after retries"
+                    )
 
     # ------------------------------------------------------------------
     # Public API
@@ -817,6 +1051,13 @@ class CoolLEDXDevice:
 
         The rendered image is chunked and sent in 128-byte pieces.
 
+        On CoolLEDUX devices (:attr:`_is_ux`), the classic chunked-text
+        command is rejected with DATA_ERROR; text is instead rasterised
+        with the exact same Pillow rendering (see :func:`_render_text_image`
+        — text drawn on a black background, cropped to its bounding box x
+        ``height`` pixels tall) and sent via the two-phase program-upload
+        path (:meth:`_send_program_upload`).
+
         Args:
             text:      Text string to display.
             color:     RGB colour tuple for the text.
@@ -825,6 +1066,21 @@ class CoolLEDXDevice:
         """
         self._current_text = text
         self._current_color = color
+
+        if self._is_ux:
+            img = _render_text_image(
+                text=text,
+                sign_height=self._height,
+                sign_width=self._width,
+                color=color,
+                bg_color=(0, 0, 0),
+                font_path=font_path,
+                font_size=font_size,
+            )
+            pixels = _image_to_argb_pixels(img, bg_color=(0, 0, 0))
+            width, height = img.size
+            await self._send_program_upload(pixels, width, height)
+            return
 
         payload = render_text_payload(
             text=text,
@@ -845,6 +1101,11 @@ class CoolLEDXDevice:
 
         The image is scaled to sign height and chunked.
 
+        On CoolLEDUX devices (:attr:`_is_ux`), the classic chunked-image
+        command is rejected with DATA_ERROR; the image is instead resized to
+        exactly ``(width, height)`` and sent via the two-phase
+        program-upload path (:meth:`_send_program_upload`).
+
         Args:
             image:    One of:
 
@@ -861,6 +1122,14 @@ class CoolLEDXDevice:
             pil_image = Image.open(io.BytesIO(image))
         else:
             pil_image = Image.open(str(image))
+
+        if self._is_ux:
+            ux_image = pil_image.convert("RGBA").resize(
+                (self._width, self._height), Image.LANCZOS
+            )
+            pixels = _image_to_argb_pixels(ux_image, bg_color=bg_color)
+            await self._send_program_upload(pixels, self._width, self._height)
+            return
 
         payload = render_image_payload(
             image=pil_image,
