@@ -1,0 +1,8 @@
+# Dependencies to run the unit test suite (tests/) in CI.
+# The protocol tests load device.py / ux_protocol.py standalone (no
+# homeassistant import), so only pytest plus the runtime deps those modules
+# import are needed. Runtime deps mirror custom_components/coolledx/manifest.json.
+pytest
+Pillow>=10.0.0
+bleak
+bleak-retry-connector>=3.6.0
