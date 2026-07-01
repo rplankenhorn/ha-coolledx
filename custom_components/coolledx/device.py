@@ -15,13 +15,18 @@ import io
 import json
 import logging
 import re
+from functools import lru_cache
 from pathlib import Path
 from typing import Union
 
+import emoji
 from bleak.backends.device import BLEDevice
 from bleak.exc import BleakError
 from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
-from PIL import Image, ImageDraw, ImageFont
+from fontTools.pens.basePen import BasePen
+from fontTools.pens.boundsPen import BoundsPen
+from fontTools.ttLib import TTFont
+from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 try:
     from . import ux_protocol
@@ -102,12 +107,139 @@ UX_SCROLL_MODES: frozenset[int] = frozenset({2, 9, 10, 13})
 CHUNK_DATA_SIZE = 128   # bytes of pixel/payload data per chunk (upstream-verified)
 PIXELS_PER_BYTE = 8     # 1-bit packing: 8 pixels → 1 byte
 MAX_TEXT_LEN = 255      # maximum text length for single-byte length field
+_FONT_DIR = Path(__file__).resolve().parent / "fonts"
+_EMOJI_FONT_PATH = _FONT_DIR / "TwemojiMozilla.ttf"
 
 # Pre-compiled regexes for byte escaping.  Order matters: escape 0x02 FIRST
 # so the escape-prefix byte itself is not double-escaped.
 _RE_02 = re.compile(b"\x02", re.MULTILINE)
 _RE_01 = re.compile(b"\x01", re.MULTILINE)
 _RE_03 = re.compile(b"\x03", re.MULTILINE)
+
+
+def _expand_shortcodes(text: str) -> str:
+    """Expand emoji shortcodes such as ``:fire:`` without blocking display."""
+    try:
+        return emoji.emojize(text, language="alias")
+    except Exception:  # noqa: BLE001
+        return text
+
+
+class _FlatteningPen(BasePen):
+    """Convert glyph contours into polygon points in pixel coordinates."""
+
+    def __init__(self, glyph_set, bounds: tuple[float, float, float, float], scale: float):
+        super().__init__(glyph_set)
+        self._min_x, _min_y, _max_x, self._max_y = bounds
+        self._scale = scale
+        self.contours: list[list[tuple[float, float]]] = []
+        self._contour: list[tuple[float, float]] = []
+        self._current: tuple[float, float] = (0, 0)
+
+    def _pixel(self, point: tuple[float, float]) -> tuple[float, float]:
+        x, y = point
+        return ((x - self._min_x) * self._scale, (self._max_y - y) * self._scale)
+
+    def _moveTo(self, p0):
+        if self._contour:
+            self.contours.append(self._contour)
+        self._contour = [self._pixel(p0)]
+        self._current = p0
+
+    def _lineTo(self, p1):
+        self._contour.append(self._pixel(p1))
+        self._current = p1
+
+    def _qCurveToOne(self, p1, p2):
+        p0 = self._current
+        for step in range(1, 9):
+            t = step / 8
+            mt = 1 - t
+            point = (
+                mt * mt * p0[0] + 2 * mt * t * p1[0] + t * t * p2[0],
+                mt * mt * p0[1] + 2 * mt * t * p1[1] + t * t * p2[1],
+            )
+            self._contour.append(self._pixel(point))
+        self._current = p2
+
+    def _curveToOne(self, p1, p2, p3):
+        p0 = self._current
+        for step in range(1, 13):
+            t = step / 12
+            mt = 1 - t
+            point = (
+                mt**3 * p0[0] + 3 * mt * mt * t * p1[0] + 3 * mt * t * t * p2[0] + t**3 * p3[0],
+                mt**3 * p0[1] + 3 * mt * mt * t * p1[1] + 3 * mt * t * t * p2[1] + t**3 * p3[1],
+            )
+            self._contour.append(self._pixel(point))
+        self._current = p3
+
+    def _closePath(self):
+        if self._contour:
+            self.contours.append(self._contour)
+            self._contour = []
+
+    def _endPath(self):
+        self._closePath()
+
+
+class _TwemojiColrRenderer:
+    """Minimal COLRv0 renderer for Twemoji's layered TrueType outlines."""
+
+    def __init__(self, font_path: Path):
+        self._font = TTFont(str(font_path))
+        self._glyph_set = self._font.getGlyphSet()
+        self._cmap = self._font.getBestCmap()
+        self._colr = self._font["COLR"].ColorLayers
+        self._palette = self._font["CPAL"].palettes[0]
+        self._units_per_em = self._font["head"].unitsPerEm
+
+    def render(self, text: str, size: int) -> Image.Image | None:
+        glyph_name = self._glyph_name(text)
+        if glyph_name is None or glyph_name not in self._colr:
+            return None
+
+        bounds = self._bounds(glyph_name)
+        if bounds is None:
+            return None
+        min_x, min_y, max_x, max_y = bounds
+        glyph_w = max_x - min_x
+        glyph_h = max_y - min_y
+        if glyph_w <= 0 or glyph_h <= 0:
+            return None
+
+        scale = size / self._units_per_em
+        width = max(1, round(glyph_w * scale))
+        height = max(1, round(glyph_h * scale))
+        image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+        for layer in self._colr[glyph_name]:
+            color = self._palette[layer.colorID]
+            fill = (color.red, color.green, color.blue, color.alpha)
+            pen = _FlatteningPen(self._glyph_set, bounds, scale)
+            self._glyph_set[layer.name].draw(pen)
+            for contour in pen.contours:
+                if len(contour) >= 3:
+                    draw.polygon(contour, fill=fill)
+        del draw
+        return image
+
+    def _glyph_name(self, text: str) -> str | None:
+        codepoints = [ord(char) for char in text if ord(char) not in {0xFE0E, 0xFE0F}]
+        if len(codepoints) == 1:
+            return self._cmap.get(codepoints[0])
+        return None
+
+    def _bounds(self, glyph_name: str) -> tuple[float, float, float, float] | None:
+        pen = BoundsPen(self._glyph_set)
+        for layer in self._colr[glyph_name]:
+            self._glyph_set[layer.name].draw(pen)
+        return pen.bounds
+
+
+@lru_cache(maxsize=1)
+def _twemoji_colr_renderer() -> _TwemojiColrRenderer:
+    return _TwemojiColrRenderer(_EMOJI_FONT_PATH)
 
 
 # ===========================================================================
@@ -393,6 +525,103 @@ def _render_text_image(
     return img.crop((0, 0, text_width, sign_height))
 
 
+def _emoji_runs(text: str) -> list[tuple[str, str]]:
+    """Split *text* into ordered ``("text"|"emoji", run)`` segments."""
+    matches = emoji.emoji_list(text)
+    if not matches:
+        return [("text", text)]
+
+    runs: list[tuple[str, str]] = []
+    pos = 0
+    for match in matches:
+        start = match["match_start"]
+        end = match["match_end"]
+        if start > pos:
+            runs.append(("text", text[pos:start]))
+        runs.append(("emoji", text[start:end]))
+        pos = end
+    if pos < len(text):
+        runs.append(("text", text[pos:]))
+    return [(kind, run) for kind, run in runs if run]
+
+
+def _crop_and_resize_to_height(
+    image: Image.Image,
+    sign_height: int,
+    bg_color: tuple[int, int, int],
+) -> Image.Image:
+    """Crop non-background pixels, then scale proportionally to sign height."""
+    bg = Image.new(image.mode, image.size, bg_color)
+    diff = ImageChops.difference(image, bg)
+    ink = diff.getbbox()
+    if ink is None:
+        return Image.new("RGB", (1, sign_height), bg_color)
+
+    cropped = image.crop(ink).convert("RGB")
+    w, h = cropped.size
+    new_w = max(1, round(w * sign_height / h))
+    return cropped.resize((new_w, sign_height), Image.LANCZOS)
+
+
+def _render_mixed_runs(
+    text: str,
+    canvas_h: int,
+    text_color: tuple[int, int, int],
+    bg_color: tuple[int, int, int],
+    text_font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
+    emoji_font: ImageFont.FreeTypeFont,
+    emoji_renderer: _TwemojiColrRenderer | None = None,
+) -> Image.Image:
+    """Render text and color emoji runs on a shared baseline."""
+    runs = _emoji_runs(text)
+    margin = max(1, canvas_h // 4)
+    measure = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    emoji_images: list[Image.Image | None] = []
+    widths: list[int] = []
+    for kind, run in runs:
+        if kind == "emoji" and emoji_renderer is not None:
+            rendered = emoji_renderer.render(run, canvas_h // 2)
+        else:
+            rendered = None
+        emoji_images.append(rendered)
+        if rendered is not None:
+            widths.append(rendered.width)
+        else:
+            font = emoji_font if kind == "emoji" else text_font
+            widths.append(max(1, round(measure.textlength(run, font=font))))
+    canvas_w = max(1, sum(widths) + margin * 2)
+    img = Image.new("RGB", (canvas_w, canvas_h), bg_color)
+    draw = ImageDraw.Draw(img)
+
+    try:
+        text_ascent, text_descent = text_font.getmetrics()
+    except AttributeError:
+        text_ascent, text_descent = canvas_h, 0
+    try:
+        emoji_ascent, emoji_descent = emoji_font.getmetrics()
+    except AttributeError:
+        emoji_ascent, emoji_descent = text_ascent, text_descent
+
+    line_ascent = max(text_ascent, emoji_ascent)
+    line_descent = max(text_descent, emoji_descent)
+    baseline_y = margin + line_ascent
+    if baseline_y + line_descent > canvas_h:
+        baseline_y = max(0, canvas_h - line_descent - margin)
+
+    x = margin
+    for (kind, run), width, rendered in zip(runs, widths, emoji_images, strict=True):
+        if rendered is not None:
+            y = max(0, baseline_y - rendered.height)
+            img.paste(rendered.convert("RGB"), (x, y), rendered)
+        elif kind == "emoji":
+            draw.text((x, baseline_y), run, font=emoji_font, anchor="ls", embedded_color=True)
+        else:
+            draw.text((x, baseline_y), run, fill=text_color, font=text_font, anchor="ls")
+        x += width
+    del draw
+    return img
+
+
 def _render_text_image_fill_height(
     text: str,
     sign_height: int,
@@ -435,17 +664,31 @@ def _render_text_image_fill_height(
     except Exception:  # noqa: BLE001
         font = ImageFont.load_default()
 
-    draw.text((supersample // 4, supersample // 4), text, color, font=font)
+    emoji_font: ImageFont.FreeTypeFont | None = None
+    emoji_renderer: _TwemojiColrRenderer | None = None
+    if emoji.emoji_list(text):
+        try:
+            emoji_font = ImageFont.truetype(str(_EMOJI_FONT_PATH), supersample)
+            emoji_renderer = _twemoji_colr_renderer()
+        except Exception:  # noqa: BLE001
+            emoji_font = None
+
+    if emoji_font is None:
+        draw.text((supersample // 4, supersample // 4), text, color, font=font)
+        del draw
+        return _crop_and_resize_to_height(img, sign_height, bg_color)
+
     del draw
-
-    ink = img.getbbox()  # bounding box of non-background (non-black) pixels
-    if ink is None:
-        return Image.new("RGB", (1, sign_height), bg_color)
-
-    cropped = img.crop(ink)
-    w, h = cropped.size
-    new_w = max(1, round(w * sign_height / h))
-    return cropped.resize((new_w, sign_height), Image.LANCZOS)
+    img = _render_mixed_runs(
+        text=text,
+        canvas_h=supersample * 2,
+        text_color=color,
+        bg_color=bg_color,
+        text_font=font,
+        emoji_font=emoji_font,
+        emoji_renderer=emoji_renderer,
+    )
+    return _crop_and_resize_to_height(img, sign_height, bg_color)
 
 
 def _pad_image_columns(
@@ -1290,6 +1533,7 @@ class CoolLEDXDevice:
                        rendering (ignored on classic devices). See
                        :meth:`set_speed`.
         """
+        text = _expand_shortcodes(text)
         self._current_text = text
         self._current_color = color
 

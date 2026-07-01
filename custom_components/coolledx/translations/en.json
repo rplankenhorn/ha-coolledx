@@ -58,7 +58,7 @@
       "fields": {
         "text": {
           "name": "Text",
-          "description": "The message text to display on the sign."
+          "description": "The message text to display. Supports emoji typed directly (🎉🔥) and :shortcode: names like :fire: and :tada: (color emoji on full-color CoolLEDUX signs)."
         },
         "color": {
           "name": "Color",

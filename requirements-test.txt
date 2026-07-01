@@ -4,5 +4,7 @@
 # import are needed. Runtime deps mirror custom_components/coolledx/manifest.json.
 pytest
 Pillow>=10.0.0
+emoji>=2.0.0
+fonttools>=4.0.0
 bleak
 bleak-retry-connector>=3.6.0

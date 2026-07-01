@@ -9,7 +9,8 @@ Assistant's Bluetooth stack, including **ESPHome Bluetooth proxies** — no phon
 ## Features (planned for v1)
 
 - Power on/off, brightness, color, scroll speed, and display mode as Home Assistant entities
-- Scrolling **text** messages (host-rendered to the sign's pixel matrix)
+- Scrolling **text** messages (host-rendered to the sign's pixel matrix), including
+  full-color emoji on CoolLEDUX signs with literal emoji or `:shortcode:` names
 - Image and animation upload via services
 - Auto-discovery over Bluetooth (including ESP32 Bluetooth proxies)
 
@@ -38,6 +39,8 @@ a different protocol and are not supported here.
 
 - BLE protocol ported from [UpDryTwist/coolledx-driver](https://github.com/UpDryTwist/coolledx-driver) (MIT).
 - Original CoolLEDX reverse engineering by [CrimsonClyde / led-faceshields](https://git.team23.org/CrimsonClyde/led-faceshields).
+- Color emoji rendering uses [Twemoji Mozilla](https://github.com/mozilla/twemoji-colr),
+  derived from Twemoji artwork licensed under CC-BY 4.0.
 
 ## License
 
