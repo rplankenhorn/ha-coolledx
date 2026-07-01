@@ -9,6 +9,7 @@ does not depend on pytest-asyncio.
 """
 
 import asyncio
+import types
 
 import pytest
 
@@ -69,12 +70,24 @@ class _FakeClient:
         # Consumed one per write_gatt_char call; once exhausted, further
         # writes default to a (0x03, 0x00) success ACK.
         self._acks = list(acks) if acks is not None else None
+        self._buffer = bytearray()
+        self._frames = 0
 
     async def write_gatt_char(self, _uuid, data, response=False):
         assert response is False, "FFF1 is write-without-response only"
-        frame = bytes(data)
-        self.writes.append(frame)
-        idx = len(self.writes) - 1
+        self.writes.append(bytes(data))
+        # The real device reassembles the 0x01..0x03 framed packet from the
+        # write-without-response byte stream (fastble split=true), ACKing once
+        # per complete frame. Mirror that: buffer until a full frame arrives.
+        if not hasattr(self, "_buffer"):
+            self._buffer = bytearray()
+        self._buffer += bytes(data)
+        if not (self._buffer[:1] == b"\x01" and self._buffer[-1:] == b"\x03"):
+            return  # partial frame; wait for more chunks
+        frame = bytes(self._buffer)
+        self._buffer = bytearray()
+        self._frames += 1
+        idx = self._frames - 1
         if self._acks is not None and idx < len(self._acks):
             ack = self._acks[idx]
         else:
@@ -100,7 +113,13 @@ def _make_ux_device(device_module, ux_module, acks=None, **kwargs):
     )
     client = _FakeClient(ux_module, device._handle_notification, acks=acks)
     device._client = client
-    device._write_char = object()
+    # Default to an MTU large enough that the small frames these tests use are
+    # each a single BLE write (so write-count assertions equal frame counts);
+    # the dedicated split test passes an explicit small max_write.
+    max_write = kwargs.pop("max_write", 512)
+    device._write_char = types.SimpleNamespace(
+        max_write_without_response_size=max_write
+    )
     return device, client
 
 
@@ -284,6 +303,28 @@ class TestSendProgramUpload:
 
         # begin (1) + 3 failed attempts at content chunk 0.
         assert len(client.writes) == 4
+
+    def test_large_frame_is_split_into_mtu_sized_writes(
+        self, device_module, ux_module
+    ):
+        # A UX content frame can exceed the BLE write-without-response MTU;
+        # it must be split into <= max_write_without_response_size BLE writes
+        # (the sign reassembles the 0x01..0x03 stream and ACKs once per frame).
+        device, client = _make_ux_device(device_module, ux_module, max_write=20)
+        # A frame comfortably larger than the 20-byte MTU.
+        frame = ux_module.encode_frame(bytes([0x03]) + bytes(200))
+
+        async def _run():
+            return await device._ux_write_and_await_ack(
+                frame, expected_cmd=0x03, timeout=1.0
+            )
+
+        cmd, status = asyncio.run(_run())
+        assert (cmd, status) == (0x03, 0x00)
+        # Multiple BLE writes, each within the MTU, reassembled into one frame.
+        assert len(client.writes) > 1
+        assert all(len(w) <= 20 for w in client.writes)
+        assert b"".join(client.writes) == frame
 
     def test_dropped_ack_times_out(self, device_module, ux_module):
         # A write whose ACK notification never arrives must time out

@@ -366,6 +366,61 @@ def _render_text_image(
     return img.crop((0, 0, text_width, sign_height))
 
 
+def _render_text_image_fill_height(
+    text: str,
+    sign_height: int,
+    color: tuple[int, int, int] = (255, 255, 255),
+    bg_color: tuple[int, int, int] = (0, 0, 0),
+    font_path: str | None = None,
+) -> Image.Image:
+    """Rasterise *text* so it fills the full sign height.
+
+    Renders at a supersampled font size, crops to the actual inked bounding
+    box, then scales to exactly ``sign_height`` pixels tall (width scaled
+    proportionally).  This makes text occupy the full vertical extent of the
+    sign regardless of the font's own metrics — unlike
+    :func:`_render_text_image`, which leaves glyphs at their natural (often
+    sub-height, vertically off-centre) size and is kept only for the legacy
+    CoolLEDX 1-bit payload path.
+
+    Args:
+        text:       Text string to display.
+        sign_height:Target height in pixels (the returned image is exactly
+                    this tall).
+        color:      RGB text colour.
+        bg_color:   RGB background colour.
+        font_path:  Optional path to a TrueType font (.ttf/.otf).
+
+    Returns:
+        RGB image ``(scaled_width, sign_height)`` in size.
+    """
+    supersample = max(sign_height * 4, 32)
+    canvas_w = max(4096, len(text) * supersample)
+    img = Image.new("RGB", (canvas_w, supersample * 2), bg_color)
+    draw = ImageDraw.Draw(img)
+
+    try:
+        font: ImageFont.FreeTypeFont | ImageFont.ImageFont
+        if font_path:
+            font = ImageFont.truetype(font_path, supersample)
+        else:
+            font = ImageFont.load_default(supersample)
+    except Exception:  # noqa: BLE001
+        font = ImageFont.load_default()
+
+    draw.text((supersample // 4, supersample // 4), text, color, font=font)
+    del draw
+
+    ink = img.getbbox()  # bounding box of non-background (non-black) pixels
+    if ink is None:
+        return Image.new("RGB", (1, sign_height), bg_color)
+
+    cropped = img.crop(ink)
+    w, h = cropped.size
+    new_w = max(1, round(w * sign_height / h))
+    return cropped.resize((new_w, sign_height), Image.LANCZOS)
+
+
 def render_text_payload(
     text: str,
     sign_height: int,
@@ -876,14 +931,32 @@ class CoolLEDXDevice:
             asyncio.TimeoutError: If no ACK notification arrives within
                                    *timeout* seconds.
         """
+        # A framed UX packet can exceed the BLE write-without-response MTU
+        # (a single ~600-byte write fails with org.bluez "Failed to initiate
+        # write").  Split it into MTU-sized BLE writes; the sign reassembles
+        # the 0x01..0x03 framed byte stream and sends exactly one ACK per
+        # complete frame (the official app does the same via fastble's
+        # split-write).  The ACK future is armed before the first chunk and
+        # resolves only once the final chunk completes the frame.
+        max_write = 0
+        if self._write_char is not None:
+            max_write = (
+                getattr(self._write_char, "max_write_without_response_size", 0) or 0
+            )
+        if max_write <= 0:
+            max_write = 20  # BLE default ATT payload; safe lower bound
+
         loop = asyncio.get_running_loop()
         future: asyncio.Future[tuple[int | None, int | None]] = loop.create_future()
         self._ack_future = future
         self._ack_expected_cmd = expected_cmd
         try:
-            await self._client.write_gatt_char(
-                WRITE_CHAR_UUID, bytearray(frame), response=False
-            )
+            for offset in range(0, len(frame), max_write):
+                await self._client.write_gatt_char(
+                    WRITE_CHAR_UUID,
+                    bytearray(frame[offset : offset + max_write]),
+                    response=False,
+                )
             return await asyncio.wait_for(future, timeout=timeout)
         finally:
             if self._ack_future is future:
@@ -1068,14 +1141,12 @@ class CoolLEDXDevice:
         self._current_color = color
 
         if self._is_ux:
-            img = _render_text_image(
+            img = _render_text_image_fill_height(
                 text=text,
                 sign_height=self._height,
-                sign_width=self._width,
                 color=color,
                 bg_color=(0, 0, 0),
                 font_path=font_path,
-                font_size=font_size,
             )
             pixels = _image_to_argb_pixels(img, bg_color=(0, 0, 0))
             width, height = img.size
