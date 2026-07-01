@@ -42,3 +42,70 @@ send_animation:
       example: /config/www/my-animation.gif
       selector:
         text: {}
+
+display_text:
+  name: Display Text
+  description: >-
+    Set the message text on the CoolLEDX LED matrix sign, optionally along
+    with colour, display mode, scroll speed, brightness, and orientation
+    invert, all applied in a single upload.
+  target:
+    entity:
+      domain: coolledx
+  fields:
+    text:
+      name: Text
+      description: The message text to display on the sign.
+      required: true
+      example: Hello world
+      selector:
+        text: {}
+    color:
+      name: Color
+      description: RGB colour to render the text in.
+      required: false
+      selector:
+        color_rgb: {}
+    mode:
+      name: Mode
+      description: CoolLEDUX display mode to apply before rendering the text.
+      required: false
+      selector:
+        select:
+          options:
+            - Scroll Left
+            - Up
+            - Down
+            - Accumulate
+            - Picture
+            - Shining
+            - Left Panning
+            - Right Panning
+            - Cover
+            - Left-Right
+    speed:
+      name: Speed
+      description: Scroll speed to apply before rendering the text (0-255).
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 255
+          mode: slider
+    brightness:
+      name: Brightness
+      description: Sign brightness to apply before rendering the text (0-255).
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 255
+          mode: slider
+    invert:
+      name: Invert
+      description: >-
+        Rotate the rendered text 180° for this call (does not change the
+        device's persisted orientation setting).
+      required: false
+      selector:
+        boolean: {}

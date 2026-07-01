@@ -12,12 +12,14 @@ from homeassistant.helpers import config_validation as cv, entity_platform
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .coordinator import CoolLEDXConfigEntry, CoolLEDXCoordinator
+from .device import UX_MODE_MAP
 from .entity import CoolLEDXEntity
 
 _LOGGER = logging.getLogger(__name__)
 
 SERVICE_SEND_IMAGE = "send_image"
 SERVICE_SEND_ANIMATION = "send_animation"
+SERVICE_DISPLAY_TEXT = "display_text"
 
 
 def _read_bytes(path: str) -> bytes:
@@ -46,6 +48,23 @@ async def async_setup_entry(
         SERVICE_SEND_ANIMATION,
         {vol.Required("path"): cv.string},
         "async_send_animation",
+    )
+    platform.async_register_entity_service(
+        SERVICE_DISPLAY_TEXT,
+        {
+            vol.Required("text"): cv.string,
+            vol.Optional("color"): vol.All(
+                [vol.All(vol.Coerce(int), vol.Range(min=0, max=255))],
+                vol.Length(min=3, max=3),
+            ),
+            vol.Optional("mode"): vol.In(list(UX_MODE_MAP)),
+            vol.Optional("speed"): vol.All(vol.Coerce(int), vol.Range(min=0, max=255)),
+            vol.Optional("brightness"): vol.All(
+                vol.Coerce(int), vol.Range(min=0, max=255)
+            ),
+            vol.Optional("invert"): cv.boolean,
+        },
+        "async_display_text",
     )
 
 
@@ -95,5 +114,41 @@ class CoolLEDXText(CoolLEDXEntity, TextEntity):
         dev = await self.coordinator.async_ensure_connected()
         data = await self.hass.async_add_executor_job(_read_bytes, path)
         await dev.send_animation(data)
+        self.coordinator.is_on = True
+        self.async_write_ha_state()
+
+    async def async_display_text(
+        self,
+        text: str,
+        color: list[int] | None = None,
+        mode: str | None = None,
+        speed: int | None = None,
+        brightness: int | None = None,
+        invert: bool | None = None,
+    ) -> None:
+        """coolledx.display_text service: set text plus optional color/mode/speed/brightness/invert in one call."""
+        dev = await self.coordinator.async_ensure_connected()
+
+        if brightness is not None:
+            await dev.set_brightness(brightness)
+            self.coordinator.brightness = brightness
+
+        if invert is not None:
+            # Transient per-call override; persisting the default is the
+            # switch entity's job, not this service.
+            dev.invert = invert
+            self.coordinator.invert = invert
+
+        rgb = tuple(color) if color is not None else self.coordinator.rgb_color
+        mode_int = UX_MODE_MAP[mode] if mode is not None else None
+
+        await dev.set_text(text, rgb, mode=mode_int, speed=speed)
+
+        self.coordinator.text = text
+        self.coordinator.rgb_color = rgb
+        if mode_int is not None:
+            self.coordinator.effect = mode_int
+        if speed is not None:
+            self.coordinator.speed = speed
         self.coordinator.is_on = True
         self.async_write_ha_state()

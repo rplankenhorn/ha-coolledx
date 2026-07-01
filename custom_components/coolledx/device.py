@@ -480,6 +480,11 @@ def _pad_image_columns(
     return padded
 
 
+def _rotate_180(image: Image.Image) -> Image.Image:
+    """Return *image* rotated 180° (lossless) for upside-down mounting."""
+    return image.transpose(Image.Transpose.ROTATE_180)
+
+
 def render_text_payload(
     text: str,
     sign_height: int,
@@ -488,6 +493,7 @@ def render_text_payload(
     bg_color: tuple[int, int, int] = (0, 0, 0),
     font_path: str | None = None,
     font_size: int | None = None,
+    invert: bool = False,
 ) -> bytearray:
     """Render *text* to the CoolLEDX text-command payload format.
 
@@ -513,6 +519,8 @@ def render_text_payload(
         bg_color:   RGB background colour.
         font_path:  Optional path to a TrueType font (.ttf/.otf).
         font_size:  Font size in points; defaults to ``sign_height - 2``.
+        invert:     If ``True``, rotate the rendered image 180° before
+                    packing (for upside-down mounting).
 
     Returns:
         Raw payload bytes.
@@ -520,6 +528,8 @@ def render_text_payload(
     img = _render_text_image(
         text, sign_height, sign_width, color, bg_color, font_path, font_size
     )
+    if invert:
+        img = _rotate_180(img)
     output_width, output_height = img.size
 
     barr_r, barr_g, barr_b = _image_to_rgb_bitfields(
@@ -552,6 +562,7 @@ def render_image_payload(
     sign_height: int,
     sign_width: int,
     bg_color: tuple[int, int, int] = (0, 0, 0),
+    invert: bool = False,
 ) -> bytearray:
     """Render a PIL Image to the CoolLEDX image-command payload format.
 
@@ -575,6 +586,8 @@ def render_image_payload(
         sign_width: Minimum output width (unused in current implementation —
                     preserved for API symmetry with upstream).
         bg_color:   Background colour for padding.
+        invert:     If ``True``, rotate the rendered image 180° before
+                    packing (for upside-down mounting).
 
     Returns:
         Raw payload bytes.
@@ -587,6 +600,9 @@ def render_image_payload(
         new_w = max(1, int(w * sign_height / h))
         img = img.resize((new_w, sign_height), Image.LANCZOS)
         w = new_w
+
+    if invert:
+        img = _rotate_180(img)
 
     output_width = max(w, 1)
     output_height = sign_height
@@ -797,6 +813,11 @@ class CoolLEDXDevice:
         # State for set_color (re-render current text with new colour)
         self._current_text: str | None = None
         self._current_color: tuple[int, int, int] = (255, 255, 255)
+
+        # 180° rotation for upside-down mounting, applied to the final
+        # rendered image on every send path (see render_text_payload /
+        # render_image_payload / set_text / send_image).
+        self.invert: bool = False
 
         # CoolLEDUX display-field state.  On UX devices the classic
         # set_mode/set_speed commands (0x06/0x07) do not affect an already
@@ -1242,6 +1263,9 @@ class CoolLEDXDevice:
         color: tuple[int, int, int] = (255, 255, 255),
         font_path: str | None = None,
         font_size: int | None = None,
+        *,
+        mode: int | None = None,
+        speed: int | None = None,
     ) -> None:
         """Render *text* and send to sign via the text command (``CMD_TEXT``).
 
@@ -1259,11 +1283,25 @@ class CoolLEDXDevice:
             color:     RGB colour tuple for the text.
             font_path: Optional path to a TrueType font file.
             font_size: Font height in points; defaults to ``height - 2``.
+            mode:      Optional CoolLEDUX display mode to set before
+                       rendering (ignored on classic devices). See
+                       :meth:`set_mode`.
+            speed:     Optional CoolLEDUX scroll speed (0-255) to set before
+                       rendering (ignored on classic devices). See
+                       :meth:`set_speed`.
         """
         self._current_text = text
         self._current_color = color
 
         if self._is_ux:
+            # mode/speed are program-body fields (see _ux_mode/_ux_speed);
+            # apply them before the scroll-padding decision below, which
+            # depends on _ux_mode.
+            if mode is not None:
+                self._ux_mode = mode & 0xFF
+            if speed is not None:
+                self._ux_speed = max(0, min(255, int(speed)))
+
             img = _render_text_image_fill_height(
                 text=text,
                 sign_height=self._height,
@@ -1276,6 +1314,8 @@ class CoolLEDXDevice:
             # the firmware only scrolls content wider than the panel.
             if self._ux_mode in UX_SCROLL_MODES:
                 img = _pad_image_columns(img, self._width, bg_color=(0, 0, 0))
+            if self.invert:
+                img = _rotate_180(img)
             pixels = _image_to_argb_pixels(img, bg_color=(0, 0, 0))
             width, height = img.size
             await self._send_program_upload(pixels, width, height)
@@ -1288,6 +1328,7 @@ class CoolLEDXDevice:
             color=color,
             font_path=font_path,
             font_size=font_size,
+            invert=self.invert,
         )
         await self._write_chunks(build_chunks(bytes(payload), CMD_TEXT))
 
@@ -1326,6 +1367,8 @@ class CoolLEDXDevice:
             ux_image = pil_image.convert("RGBA").resize(
                 (self._width, self._height), Image.LANCZOS
             )
+            if self.invert:
+                ux_image = _rotate_180(ux_image)
             pixels = _image_to_argb_pixels(ux_image, bg_color=bg_color)
             await self._send_program_upload(pixels, self._width, self._height)
             return
@@ -1335,6 +1378,7 @@ class CoolLEDXDevice:
             sign_height=self._height,
             sign_width=self._width,
             bg_color=bg_color,
+            invert=self.invert,
         )
         await self._write_chunks(build_chunks(bytes(payload), CMD_IMAGE))
 

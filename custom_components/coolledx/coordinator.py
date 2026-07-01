@@ -14,6 +14,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 
+from .const import CONF_INVERT
 from .device import CoolLEDXDevice
 
 _LOGGER = logging.getLogger(__name__)
@@ -77,6 +78,8 @@ class CoolLEDXCoordinator:
         height: int,
         width: int,
         color_mode: int,
+        invert: bool = False,
+        entry: ConfigEntry | None = None,
     ) -> None:
         """Initialise the coordinator.
 
@@ -91,6 +94,11 @@ class CoolLEDXCoordinator:
                         (or the default of 96).
             color_mode: Color mode constant parsed from the advertisement
                         (or the default ``COLOR_MODE_RGB``).
+            invert:     Whether rendered content should be rotated 180°
+                        (for upside-down mounting), persisted on the
+                        config entry.
+            entry:      The config entry backing this coordinator, used to
+                        persist the ``invert`` setting.
         """
         self.hass = hass
         self.address = address
@@ -98,6 +106,7 @@ class CoolLEDXCoordinator:
         self.height = height
         self.width = width
         self.color_mode = color_mode
+        self.entry = entry
 
         self._device: CoolLEDXDevice | None = None
 
@@ -111,6 +120,7 @@ class CoolLEDXCoordinator:
         self.effect: int | None = None
         self.speed: int = 128
         self.text: str = ""
+        self.invert: bool = invert
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -153,6 +163,7 @@ class CoolLEDXCoordinator:
             width=self.width,
             color_mode=self.color_mode,
         )
+        self._device.invert = self.invert
 
     async def async_ensure_connected(self) -> CoolLEDXDevice:
         """Return a connected ``CoolLEDXDevice``, connecting if necessary.
@@ -185,10 +196,38 @@ class CoolLEDXCoordinator:
             # Update to the freshest BLEDevice — proxy may have changed.
             self._device._ble_device = ble_device
 
+        # Ensure the freshest invert setting always propagates, even if it
+        # changed after the device was created.
+        self._device.invert = self.invert
+
         if not self._device.is_connected:
             await self._device.connect()
 
         return self._device
+
+    async def async_set_invert(self, value: bool) -> None:
+        """Set invert orientation, persist to the config entry, and re-render current text."""
+        self.invert = value
+        if self._device is not None:
+            self._device.invert = value
+
+        if self.entry is not None:
+            self.hass.config_entries.async_update_entry(
+                self.entry, data={**self.entry.data, CONF_INVERT: value}
+            )
+
+        # Re-render the current content immediately so the flip is visible
+        # without waiting for the next write.  Never force a connection just
+        # to re-render; if the device is not currently connected, skip it.
+        if self._device is not None and self._device.is_connected and self.text:
+            try:
+                await self._device.set_text(self.text, self.rgb_color)
+            except Exception:  # noqa: BLE001
+                _LOGGER.debug(
+                    "Error re-rendering text after invert change for %s",
+                    self.address,
+                    exc_info=True,
+                )
 
     async def async_disconnect(self) -> None:
         """Disconnect from the device; safe to call when already disconnected."""

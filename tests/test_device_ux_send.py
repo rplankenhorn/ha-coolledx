@@ -656,3 +656,145 @@ class TestUxScrollTextPadding:
         assert captured["width"] < device.width or captured["width"] == captured["width"]
         # Precisely: width must NOT include the 2*panel padding.
         assert captured["width"] < 2 * device.width
+
+
+class TestUxInvertAndSetTextParams:
+    """180-degree invert (for upside-down mounting) and set_text(mode=, speed=)."""
+
+    def test_rotate_180_flips_corner_pixel(self, device_module):
+        from PIL import Image
+
+        img = Image.new("RGB", (3, 2), (0, 0, 0))
+        img.putpixel((0, 0), (255, 0, 0))  # distinct marker in one corner
+
+        out = device_module._rotate_180(img)
+
+        assert out.size == (3, 2)
+        assert out.getpixel((0, 0)) == (0, 0, 0)
+        assert out.getpixel((2, 1)) == (255, 0, 0)  # moved to opposite corner
+
+    def test_ux_set_text_invert_changes_pixels_same_length(
+        self, device_module, ux_module, monkeypatch
+    ):
+        device, _client = _make_ux_device(device_module, ux_module)
+        device._ux_mode = 7  # non-scroll: keep the geometry simple
+        captured = {}
+
+        async def fake_send(pixels, width, height, **kw):
+            captured[device.invert] = list(pixels)
+
+        monkeypatch.setattr(device, "_send_program_upload", fake_send)
+
+        device.invert = False
+        asyncio.run(device.set_text("HI", color=(255, 0, 0)))
+        device.invert = True
+        asyncio.run(device.set_text("HI", color=(255, 0, 0)))
+
+        assert len(captured[False]) == len(captured[True])
+        assert captured[False] != captured[True]
+
+    def test_ux_send_image_invert_noop_for_solid_colour(
+        self, device_module, ux_module, monkeypatch
+    ):
+        from PIL import Image
+
+        device, _client = _make_ux_device(device_module, ux_module)
+        captured = {}
+
+        async def fake_send(pixels, width, height, **kw):
+            captured[device.invert] = list(pixels)
+
+        monkeypatch.setattr(device, "_send_program_upload", fake_send)
+
+        solid = Image.new("RGB", (device.width, device.height), (0, 255, 0))
+
+        device.invert = False
+        asyncio.run(device.send_image(solid))
+        device.invert = True
+        asyncio.run(device.send_image(solid))
+
+        # Rotating a solid-colour image is a no-op -- this proves the pixel
+        # diff seen elsewhere in this class is due to rotation, not some
+        # unrelated side effect of the invert flag.
+        assert captured[False] == captured[True]
+
+    def test_ux_send_image_invert_changes_pixels_for_asymmetric_image(
+        self, device_module, ux_module, monkeypatch
+    ):
+        from PIL import Image
+
+        device, _client = _make_ux_device(device_module, ux_module)
+        captured = {}
+
+        async def fake_send(pixels, width, height, **kw):
+            captured[device.invert] = list(pixels)
+
+        monkeypatch.setattr(device, "_send_program_upload", fake_send)
+
+        img = Image.new("RGB", (device.width, device.height), (0, 0, 0))
+        img.putpixel((0, 0), (255, 0, 0))  # corner marker -> asymmetric
+
+        device.invert = False
+        asyncio.run(device.send_image(img))
+        device.invert = True
+        asyncio.run(device.send_image(img))
+
+        assert captured[False] != captured[True]
+
+    def test_set_text_mode_sets_ux_mode(self, device_module, ux_module, monkeypatch):
+        device, _client = _make_ux_device(device_module, ux_module)
+
+        async def fake_send(pixels, width, height, **kw):
+            pass
+
+        monkeypatch.setattr(device, "_send_program_upload", fake_send)
+
+        asyncio.run(device.set_text("HI", mode=7))
+
+        assert device._ux_mode == 7
+
+    def test_set_text_speed_sets_ux_speed(self, device_module, ux_module, monkeypatch):
+        device, _client = _make_ux_device(device_module, ux_module)
+
+        async def fake_send(pixels, width, height, **kw):
+            pass
+
+        monkeypatch.setattr(device, "_send_program_upload", fake_send)
+
+        asyncio.run(device.set_text("HI", speed=50))
+
+        assert device._ux_speed == 50
+
+    def test_set_text_mode_affects_scroll_padding_before_render(
+        self, device_module, ux_module, monkeypatch
+    ):
+        device, _client = _make_ux_device(device_module, ux_module)
+        widths = {}
+
+        async def fake_send(pixels, width, height, **kw):
+            widths[kw.get("_mode_used", device._ux_mode)] = width
+
+        monkeypatch.setattr(device, "_send_program_upload", fake_send)
+
+        asyncio.run(device.set_text("HI", mode=7))  # non-scroll -> unpadded
+        width_picture = widths[7]
+
+        asyncio.run(device.set_text("HI", mode=2))  # scroll-left -> padded
+        width_scroll = widths[2]
+
+        assert width_scroll == width_picture + 2 * device.width
+
+    def test_classic_render_text_payload_invert_differs(self, device_module):
+        payload_plain = device_module.render_text_payload(
+            text="HI",
+            sign_height=16,
+            sign_width=96,
+            invert=False,
+        )
+        payload_inverted = device_module.render_text_payload(
+            text="HI",
+            sign_height=16,
+            sign_width=96,
+            invert=True,
+        )
+        assert payload_plain != payload_inverted

@@ -26,3 +26,7 @@ CONF_COLOR_MODE = "color_mode"
 DEFAULT_HEIGHT = 16
 DEFAULT_WIDTH = 96
 DEFAULT_COLOR_MODE = COLOR_MODE_RGB
+
+# Config entry key for the invert-orientation setting
+CONF_INVERT = "invert"
+DEFAULT_INVERT = False

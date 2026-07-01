@@ -12,9 +12,11 @@ from .const import (
     CONF_ADDRESS,
     CONF_COLOR_MODE,
     CONF_HEIGHT,
+    CONF_INVERT,
     CONF_WIDTH,
     DEFAULT_COLOR_MODE,
     DEFAULT_HEIGHT,
+    DEFAULT_INVERT,
     DEFAULT_WIDTH,
 )
 from .coordinator import CoolLEDXCoordinator
@@ -26,6 +28,7 @@ PLATFORMS: list[Platform] = [
     Platform.TEXT,
     Platform.NUMBER,
     Platform.SELECT,
+    Platform.SWITCH,
 ]
 
 # Modern HA typed config-entry alias.  ``entry.runtime_data`` holds the
@@ -48,6 +51,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: CoolLEDXConfigEntry) -> 
     height: int = entry.data.get(CONF_HEIGHT, DEFAULT_HEIGHT)
     width: int = entry.data.get(CONF_WIDTH, DEFAULT_WIDTH)
     color_mode: int = entry.data.get(CONF_COLOR_MODE, DEFAULT_COLOR_MODE)
+    invert: bool = entry.data.get(CONF_INVERT, DEFAULT_INVERT)
 
     coordinator = CoolLEDXCoordinator(
         hass=hass,
@@ -56,6 +60,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: CoolLEDXConfigEntry) -> 
         height=height,
         width=width,
         color_mode=color_mode,
+        invert=invert,
+        entry=entry,
     )
 
     # Raises ConfigEntryNotReady if the device cannot be found.

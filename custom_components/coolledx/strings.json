@@ -26,6 +26,9 @@
     },
     "select": {
       "display_mode": { "name": "Display mode" }
+    },
+    "switch": {
+      "invert_display": { "name": "Invert display" }
     }
   },
   "services": {
@@ -46,6 +49,36 @@
         "path": {
           "name": "Path",
           "description": "Absolute path to a .jt or GIF animation file readable by Home Assistant."
+        }
+      }
+    },
+    "display_text": {
+      "name": "Display text",
+      "description": "Sets the message text, optionally along with color, mode, speed, brightness, and invert, in a single upload.",
+      "fields": {
+        "text": {
+          "name": "Text",
+          "description": "The message text to display on the sign."
+        },
+        "color": {
+          "name": "Color",
+          "description": "RGB color to render the text in."
+        },
+        "mode": {
+          "name": "Mode",
+          "description": "CoolLEDUX display mode to apply before rendering the text."
+        },
+        "speed": {
+          "name": "Speed",
+          "description": "Scroll speed to apply before rendering the text (0-255)."
+        },
+        "brightness": {
+          "name": "Brightness",
+          "description": "Sign brightness to apply before rendering the text (0-255)."
+        },
+        "invert": {
+          "name": "Invert",
+          "description": "Rotate the rendered text 180° for this call (does not change the device's persisted orientation setting)."
         }
       }
     }
