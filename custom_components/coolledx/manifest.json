@@ -10,5 +10,8 @@
   "integration_type": "device",
   "dependencies": ["bluetooth_adapters"],
   "requirements": ["bleak-retry-connector>=3.6.0", "Pillow>=10.0.0"],
-  "bluetooth": [{ "local_name": "CoolLED*" }]
+  "bluetooth": [
+    { "manufacturer_id": 495, "manufacturer_data_start": [73, 165] },
+    { "local_name": "CoolLED*" }
+  ]
 }
