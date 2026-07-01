@@ -2,16 +2,33 @@
   "domain": "coolledx",
   "name": "CoolLEDX LED Sign",
   "bluetooth": [
-    { "manufacturer_id": 495, "manufacturer_data_start": [73, 165] },
-    { "local_name": "CoolLED*" }
+    {
+      "manufacturer_id": 495,
+      "manufacturer_data_start": [
+        73,
+        165
+      ]
+    },
+    {
+      "local_name": "CoolLED*"
+    }
   ],
-  "codeowners": ["@rplankenhorn"],
+  "codeowners": [
+    "@rplankenhorn"
+  ],
   "config_flow": true,
-  "dependencies": ["bluetooth_adapters"],
+  "dependencies": [
+    "bluetooth_adapters"
+  ],
   "documentation": "https://github.com/rplankenhorn/ha-coolledx",
   "integration_type": "device",
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/rplankenhorn/ha-coolledx/issues",
-  "requirements": ["bleak-retry-connector>=3.6.0", "emoji>=2.0.0", "fonttools>=4.0.0", "Pillow>=10.0.0"],
-  "version": "0.1.0"
+  "requirements": [
+    "bleak-retry-connector>=3.6.0",
+    "emoji>=2.0.0",
+    "fonttools>=4.0.0",
+    "Pillow>=10.0.0"
+  ],
+  "version": "1.0.0"
 }
