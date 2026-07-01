@@ -16,7 +16,12 @@ from homeassistant.components.light import (
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import COLOR_MODE_MONO, COLOR_MODE_RGB, COLOR_MODE_SEVEN
+from .const import (
+    COLOR_MODE_FULL,
+    COLOR_MODE_MONO,
+    COLOR_MODE_RGB,
+    COLOR_MODE_SEVEN,
+)
 from .coordinator import CoolLEDXConfigEntry, CoolLEDXCoordinator
 from .device import UX_MODE_MAP
 from .entity import CoolLEDXEntity
@@ -63,9 +68,14 @@ class CoolLEDXLight(CoolLEDXEntity, LightEntity):
         self._attr_unique_id = f"{coordinator.address}_light"
 
         # Determine HA ColorMode from the device's advertised color capability.
-        if coordinator.color_mode in (COLOR_MODE_RGB, COLOR_MODE_SEVEN):
+        if coordinator.color_mode in (
+            COLOR_MODE_RGB,
+            COLOR_MODE_SEVEN,
+            COLOR_MODE_FULL,
+        ):
             # COLOR_MODE_SEVEN: device snaps to nearest of 7 colours; we still
-            # send full RGB so HA treats it as RGB.
+            # send full RGB so HA treats it as RGB.  COLOR_MODE_FULL: full-colour
+            # panel, natively RGB.
             self._attr_color_mode = ColorMode.RGB
             self._attr_supported_color_modes = {ColorMode.RGB}
         else:

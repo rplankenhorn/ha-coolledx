@@ -16,6 +16,7 @@ CONF_ADDRESS = "address"
 COLOR_MODE_MONO = 0
 COLOR_MODE_SEVEN = 1
 COLOR_MODE_RGB = 2
+COLOR_MODE_FULL = 3  # CoolLEDUX full-colour panels; RGB-capable
 
 # Config entry keys for parsed device geometry
 CONF_HEIGHT = "height"
