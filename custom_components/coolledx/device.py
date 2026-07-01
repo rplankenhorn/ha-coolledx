@@ -89,6 +89,12 @@ UX_MODE_MAP: dict[str, int] = {
     "Left-Right": 13,
 }
 
+# UX modes that scroll horizontally.  For these, short text is padded with
+# blank columns (see :func:`_pad_image_columns`) so it slides fully across the
+# panel — the firmware only scrolls content wider than the panel, so an
+# unpadded word that fits would otherwise sit static.
+UX_SCROLL_MODES: frozenset[int] = frozenset({2, 9, 10, 13})
+
 # ---------------------------------------------------------------------------
 # Protocol / render constants
 # ---------------------------------------------------------------------------
@@ -440,6 +446,38 @@ def _render_text_image_fill_height(
     w, h = cropped.size
     new_w = max(1, round(w * sign_height / h))
     return cropped.resize((new_w, sign_height), Image.LANCZOS)
+
+
+def _pad_image_columns(
+    image: Image.Image,
+    pad: int,
+    bg_color: tuple[int, int, int] = (0, 0, 0),
+) -> Image.Image:
+    """Return a copy of *image* with *pad* blank columns added on each side.
+
+    Used by the CoolLEDUX scrolling-text path: the sign's firmware only
+    scrolls program content that is wider than the physical panel (a word
+    that fits is shown static), so padding a short text image with blank
+    columns forces it to slide fully across the screen — entering from the
+    right edge and exiting the left.
+
+    Args:
+        image:    Source image.
+        pad:      Blank columns to add on the left and on the right.  ``<= 0``
+                  returns *image* unchanged.
+        bg_color: Fill colour for the added columns.
+
+    Returns:
+        The padded RGB image (``width + 2*pad`` wide), or *image* if
+        ``pad <= 0``.
+    """
+    if pad <= 0:
+        return image
+    src = image.convert("RGB")
+    w, h = src.size
+    padded = Image.new("RGB", (w + 2 * pad, h), bg_color)
+    padded.paste(src, (pad, 0))
+    return padded
 
 
 def render_text_payload(
@@ -1233,6 +1271,11 @@ class CoolLEDXDevice:
                 bg_color=(0, 0, 0),
                 font_path=font_path,
             )
+            # For horizontal-scroll modes, pad with blank columns so even a
+            # short word (narrower than the panel) slides fully across —
+            # the firmware only scrolls content wider than the panel.
+            if self._ux_mode in UX_SCROLL_MODES:
+                img = _pad_image_columns(img, self._width, bg_color=(0, 0, 0))
             pixels = _image_to_argb_pixels(img, bg_color=(0, 0, 0))
             width, height = img.size
             await self._send_program_upload(pixels, width, height)

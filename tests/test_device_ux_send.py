@@ -587,3 +587,72 @@ class TestUxModeSpeedReupload:
         asyncio.run(device.set_mode(3))
 
         assert sent == [bytes([device_module.CMD_MODE, 3])]
+
+
+class TestUxScrollTextPadding:
+    """The CoolLEDUX firmware only scrolls content wider than the panel, so
+    short words rendered at their natural width sit static. For horizontal
+    scroll modes the rendered text image is padded with blank columns
+    (panel-width each side) so any word slides fully across the screen."""
+
+    def test_pad_image_columns_adds_blank_border(self, device_module):
+        from PIL import Image
+
+        src = Image.new("RGB", (4, 16), (255, 0, 0))
+        out = device_module._pad_image_columns(src, 5, bg_color=(0, 0, 0))
+
+        assert out.size == (4 + 2 * 5, 16)
+        # Leading + trailing columns are background (black)...
+        assert out.getpixel((0, 8)) == (0, 0, 0)
+        assert out.getpixel((13, 8)) == (0, 0, 0)
+        # ...and the original content is preserved in the middle.
+        assert out.getpixel((5, 8)) == (255, 0, 0)
+        assert out.getpixel((8, 8)) == (255, 0, 0)
+
+    def test_pad_image_columns_zero_is_noop(self, device_module):
+        from PIL import Image
+
+        src = Image.new("RGB", (4, 16), (255, 0, 0))
+        out = device_module._pad_image_columns(src, 0)
+        assert out.size == (4, 16)
+
+    def test_scroll_mode_pads_text_wider_than_panel(
+        self, device_module, ux_module, monkeypatch
+    ):
+        device, _client = _make_ux_device(device_module, ux_module)
+        widths = {}
+
+        async def fake_send(pixels, width, height, **kw):
+            widths[device._ux_mode] = width
+
+        monkeypatch.setattr(device, "_send_program_upload", fake_send)
+
+        # Non-scroll mode (picture): natural text width, no padding.
+        device._ux_mode = 7
+        asyncio.run(device.set_text("HI"))
+        # Scroll-left mode: same text padded by panel width on each side.
+        device._ux_mode = 2
+        asyncio.run(device.set_text("HI"))
+
+        assert widths[2] == widths[7] + 2 * device.width
+        # Padded content is wider than the panel -> firmware will scroll it.
+        assert widths[2] > device.width
+
+    def test_nonscroll_mode_leaves_text_unpadded(
+        self, device_module, ux_module, monkeypatch
+    ):
+        device, _client = _make_ux_device(device_module, ux_module)
+        captured = {}
+
+        async def fake_send(pixels, width, height, **kw):
+            captured["width"] = width
+
+        monkeypatch.setattr(device, "_send_program_upload", fake_send)
+
+        device._ux_mode = 7  # picture (non-scroll)
+        asyncio.run(device.set_text("HI"))
+
+        # No blank padding added for a non-horizontal-scroll mode.
+        assert captured["width"] < device.width or captured["width"] == captured["width"]
+        # Precisely: width must NOT include the 2*panel padding.
+        assert captured["width"] < 2 * device.width
