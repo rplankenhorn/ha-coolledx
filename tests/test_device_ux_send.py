@@ -417,3 +417,173 @@ class TestSetTextAndSendImageRouteThroughUx:
 
         assert called["ux"] is False
         assert "chunks" in captured_chunks
+
+
+class TestUxModeSpeedReupload:
+    """mode/speed on CoolLEDUX are program-body fields, not standalone
+    commands: changing them re-uploads the last content with the new field
+    values (see _send_program_upload / set_speed / set_mode)."""
+
+    def _patch_ack(self, device, monkeypatch):
+        """Stub the ACK round-trip so uploads complete without a fake client."""
+        async def fake_ack(frame, expected_cmd=None, timeout=5.0):
+            return (expected_cmd, 0)
+
+        monkeypatch.setattr(device, "_ux_write_and_await_ack", fake_ack)
+
+    def test_send_program_upload_forwards_instance_fields(
+        self, device_module, ux_module, monkeypatch
+    ):
+        device, _client = _make_ux_device(device_module, ux_module)
+        device._ux_mode = 7
+        device._ux_speed = 100
+        device._ux_stay_time = 5
+        captured = {}
+
+        def fake_build(pixels, width, height, **kw):
+            captured.update(kw)
+            return b"BEGIN", []
+
+        monkeypatch.setattr(
+            device_module.ux_protocol, "build_program_upload", fake_build
+        )
+        self._patch_ack(device, monkeypatch)
+
+        asyncio.run(device._send_program_upload([0] * 10, 5, 2))
+
+        assert captured["mode"] == 7
+        assert captured["speed"] == 100
+        assert captured["stayTime"] == 5
+
+    def test_explicit_kwargs_override_instance_fields(
+        self, device_module, ux_module, monkeypatch
+    ):
+        device, _client = _make_ux_device(device_module, ux_module)
+        device._ux_mode = 2
+        captured = {}
+
+        def fake_build(pixels, width, height, **kw):
+            captured.update(kw)
+            return b"BEGIN", []
+
+        monkeypatch.setattr(
+            device_module.ux_protocol, "build_program_upload", fake_build
+        )
+        self._patch_ack(device, monkeypatch)
+
+        asyncio.run(device._send_program_upload([0] * 10, 5, 2, mode=9))
+
+        assert captured["mode"] == 9
+
+    def test_send_program_upload_stores_last_content(
+        self, device_module, ux_module, monkeypatch
+    ):
+        device, _client = _make_ux_device(device_module, ux_module)
+
+        def fake_build(pixels, width, height, **kw):
+            return b"BEGIN", []
+
+        monkeypatch.setattr(
+            device_module.ux_protocol, "build_program_upload", fake_build
+        )
+        self._patch_ack(device, monkeypatch)
+
+        pixels = [0xFF00FF00] * 10
+        asyncio.run(device._send_program_upload(pixels, 5, 2))
+
+        assert device._ux_last_pixels == pixels
+        assert device._ux_last_size == (5, 2)
+
+    def test_set_speed_reuploads_last_content_on_ux(
+        self, device_module, ux_module, monkeypatch
+    ):
+        device, _client = _make_ux_device(device_module, ux_module)
+        calls = []
+
+        async def fake_send(pixels, width, height, **kw):
+            device._ux_last_pixels = pixels
+            device._ux_last_size = (width, height)
+            calls.append((width, height))
+
+        monkeypatch.setattr(device, "_send_program_upload", fake_send)
+
+        asyncio.run(device.set_text("HI"))
+        assert len(calls) == 1
+
+        asyncio.run(device.set_speed(42))
+
+        assert device._ux_speed == 42
+        assert len(calls) == 2  # last content re-uploaded with the new speed
+
+    def test_set_mode_reuploads_last_content_on_ux(
+        self, device_module, ux_module, monkeypatch
+    ):
+        device, _client = _make_ux_device(device_module, ux_module)
+        calls = []
+
+        async def fake_send(pixels, width, height, **kw):
+            device._ux_last_pixels = pixels
+            device._ux_last_size = (width, height)
+            calls.append((width, height))
+
+        monkeypatch.setattr(device, "_send_program_upload", fake_send)
+
+        asyncio.run(device.set_text("HI"))
+        asyncio.run(device.set_mode(7))
+
+        assert device._ux_mode == 7
+        assert len(calls) == 2
+
+    def test_set_speed_without_content_does_not_upload_on_ux(
+        self, device_module, ux_module, monkeypatch
+    ):
+        device, _client = _make_ux_device(device_module, ux_module)
+        calls = []
+
+        async def fake_send(*a, **kw):
+            calls.append(a)
+
+        monkeypatch.setattr(device, "_send_program_upload", fake_send)
+
+        asyncio.run(device.set_speed(42))
+
+        assert device._ux_speed == 42
+        assert calls == []  # nothing uploaded yet -> nothing to re-upload
+
+    def test_classic_set_speed_sends_simple_command(
+        self, device_module, ux_module, monkeypatch
+    ):
+        device = device_module.CoolLEDXDevice(
+            ble_device=object(),
+            name="CoolLED-Classic",
+            color_mode=device_module.COLOR_MODE_RGB,
+        )
+        sent = []
+
+        async def fake_simple(payload):
+            sent.append(bytes(payload))
+
+        monkeypatch.setattr(device, "_send_simple", fake_simple)
+
+        asyncio.run(device.set_speed(200))
+
+        assert sent == [bytes([device_module.CMD_SPEED, 200])]
+
+    def test_classic_set_mode_sends_simple_command(
+        self, device_module, ux_module, monkeypatch
+    ):
+        device = device_module.CoolLEDXDevice(
+            ble_device=object(),
+            name="CoolLED-Classic",
+            color_mode=device_module.COLOR_MODE_RGB,
+        )
+        sent = []
+
+        async def fake_simple(payload):
+            sent.append(bytes(payload))
+
+        monkeypatch.setattr(device, "_send_simple", fake_simple)
+
+        asyncio.run(device.set_mode(3))
+
+        assert sent == [bytes([device_module.CMD_MODE, 3])]

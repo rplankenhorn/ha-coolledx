@@ -9,27 +9,20 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .coordinator import CoolLEDXConfigEntry, CoolLEDXCoordinator
+from .device import UX_MODE_MAP
 from .entity import CoolLEDXEntity
 
 _LOGGER = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Mode map — display-mode name (shown in the HA UI) -> device mode integer.
-# The integer values must match those in CoolLEDXLight's EFFECT_MAP because
-# coordinator.effect is shared between the light's effect feature and this
-# select entity — selecting a mode here is equivalent to activating an effect
-# on the light entity.
+# Uses the CoolLEDUX mode numbering (UX_MODE_MAP in device.py); the integer
+# values are shared with CoolLEDXLight's EFFECT_MAP (both derive from the same
+# map) because coordinator.effect is shared between the light's effect feature
+# and this select entity — selecting a mode here is equivalent to activating
+# an effect on the light entity.
 # ---------------------------------------------------------------------------
-MODE_MAP: dict[str, int] = {
-    "Static": 0,
-    "Scroll Left": 1,
-    "Scroll Right": 2,
-    "Scroll Up": 3,
-    "Scroll Down": 4,
-    "Snowflake": 5,
-    "Picture": 6,
-    "Laser": 7,
-}
+MODE_MAP: dict[str, int] = dict(UX_MODE_MAP)
 
 MODE_MAP_REVERSE: dict[int, str] = {v: k for k, v in MODE_MAP.items()}
 

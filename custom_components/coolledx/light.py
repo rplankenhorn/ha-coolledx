@@ -18,24 +18,18 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import COLOR_MODE_MONO, COLOR_MODE_RGB, COLOR_MODE_SEVEN
 from .coordinator import CoolLEDXConfigEntry, CoolLEDXCoordinator
+from .device import UX_MODE_MAP
 from .entity import CoolLEDXEntity
 
 _LOGGER = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Effect map — effect name (shown in the HA UI) -> device mode integer.
-# Order matches the device's native mode numbering (0-based).
+# Uses the CoolLEDUX mode numbering (UX_MODE_MAP in device.py).  Shares its
+# integer values with the select entity's MODE_MAP (both derive from the same
+# map) via the coordinator's stored effect value.
 # ---------------------------------------------------------------------------
-EFFECT_MAP: dict[str, int] = {
-    "Static": 0,
-    "Left": 1,
-    "Right": 2,
-    "Up": 3,
-    "Down": 4,
-    "Snowflake": 5,
-    "Picture": 6,
-    "Laser": 7,
-}
+EFFECT_MAP: dict[str, int] = dict(UX_MODE_MAP)
 
 EFFECT_MAP_REVERSE: dict[int, str] = {v: k for k, v in EFFECT_MAP.items()}
 

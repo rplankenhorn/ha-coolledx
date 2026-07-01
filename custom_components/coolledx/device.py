@@ -69,6 +69,27 @@ COLOR_MODE_RGB = 0x02    # full RGB
 COLOR_MODE_FULL = 0x03   # full-colour reported by CoolLEDUX (rendered as RGB)
 
 # ---------------------------------------------------------------------------
+# CoolLEDUX display modes  (from the official app's CoolleduxModeChooseDialog)
+# ---------------------------------------------------------------------------
+# On UX devices these integers are written into the program body's mode field
+# (see CoolLEDXDevice.set_mode); they differ from the classic CoolLEDX mode
+# numbering.  Shared by the light (effect) and select (display-mode) entities
+# via the coordinator's stored effect value, so the mapping lives here once.
+
+UX_MODE_MAP: dict[str, int] = {
+    "Scroll Left": 2,
+    "Up": 4,
+    "Down": 5,
+    "Accumulate": 6,
+    "Picture": 7,
+    "Shining": 8,
+    "Left Panning": 9,
+    "Right Panning": 10,
+    "Cover": 11,
+    "Left-Right": 13,
+}
+
+# ---------------------------------------------------------------------------
 # Protocol / render constants
 # ---------------------------------------------------------------------------
 
@@ -739,6 +760,18 @@ class CoolLEDXDevice:
         self._current_text: str | None = None
         self._current_color: tuple[int, int, int] = (255, 255, 255)
 
+        # CoolLEDUX display-field state.  On UX devices the classic
+        # set_mode/set_speed commands (0x06/0x07) do not affect an already
+        # uploaded program — mode, speed and stay-time are fields baked into
+        # the program body — so they are stored here and applied by
+        # re-uploading the last content (see _send_program_upload /
+        # _reupload_last_ux).  Defaults mirror ux_protocol.build_image_program.
+        self._ux_mode: int = 2       # scroll-left
+        self._ux_speed: int = 255
+        self._ux_stay_time: int = 3
+        self._ux_last_pixels: list[int] | None = None
+        self._ux_last_size: tuple[int, int] = (0, 0)
+
     # ------------------------------------------------------------------
     # Properties
     # ------------------------------------------------------------------
@@ -993,6 +1026,19 @@ class CoolLEDXDevice:
                           non-zero status, or a content frame still fails
                           after 3 attempts.
         """
+        # mode/speed/stayTime are program-body fields; default them from the
+        # device's stored UX display-field state unless the caller overrode
+        # them, so a later set_mode/set_speed re-upload picks up the new value.
+        kw.setdefault("mode", self._ux_mode)
+        kw.setdefault("speed", self._ux_speed)
+        kw.setdefault("stayTime", self._ux_stay_time)
+
+        # Remember the last content so set_mode/set_speed can re-upload it
+        # with the new field values (the hardware has no "change mode of the
+        # current program" command).
+        self._ux_last_pixels = pixels_argb
+        self._ux_last_size = (width, height)
+
         begin, content = ux_protocol.build_program_upload(
             pixels_argb, width, height, **kw
         )
@@ -1037,6 +1083,25 @@ class CoolLEDXDevice:
                         f"{self._name}: content chunk {idx} failed after retries"
                     )
 
+    async def _reupload_last_ux(self) -> bool:
+        """Re-upload the last UX program with the current display-field state.
+
+        Used by :meth:`set_mode` / :meth:`set_speed` on CoolLEDUX devices,
+        where mode/speed are baked into the program body: applying a new value
+        means re-sending the stored content (:attr:`_ux_last_pixels`) so
+        :meth:`_send_program_upload` rebuilds it with the updated
+        :attr:`_ux_mode` / :attr:`_ux_speed` / :attr:`_ux_stay_time`.
+
+        Returns:
+            ``True`` if content was re-uploaded, ``False`` if nothing has been
+            uploaded yet (the new field value is stored for the next upload).
+        """
+        if self._ux_last_pixels is None:
+            return False
+        width, height = self._ux_last_size
+        await self._send_program_upload(self._ux_last_pixels, width, height)
+        return True
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -1079,18 +1144,38 @@ class CoolLEDXDevice:
     async def set_speed(self, value: int) -> None:
         """Set scroll speed.
 
+        On CoolLEDUX devices (:attr:`_is_ux`) speed is a program-body field:
+        the value is stored and the last content is re-uploaded so it takes
+        effect (the classic ``CMD_SPEED`` command does not alter an uploaded
+        UX program).  On classic devices the ``CMD_SPEED`` command is sent.
+
         Args:
             value: Speed level 0–255.
         """
         value = max(0, min(255, int(value)))
+        if self._is_ux:
+            self._ux_speed = value
+            await self._reupload_last_ux()
+            return
         await self._send_simple(bytes([CMD_SPEED, value]))
 
     async def set_mode(self, mode: int) -> None:
         """Set display animation mode.
 
+        On CoolLEDUX devices (:attr:`_is_ux`) mode is a program-body field:
+        the value is stored and the last content is re-uploaded so it takes
+        effect (the classic ``CMD_MODE`` command does not alter an uploaded
+        UX program).  On classic devices the ``CMD_MODE`` command is sent.
+
         Args:
-            mode: Mode byte (e.g. ``0x02`` = scroll-left, ``0x01`` = static).
+            mode: Mode byte.  UX modes: 2=scroll-left, 4=up, 5=down,
+                  6=accumulate, 7=picture, 8=shining, 9/10=panning,
+                  11/12=cover, 13=left-right.  Classic: 0x02=scroll-left, etc.
         """
+        if self._is_ux:
+            self._ux_mode = mode & 0xFF
+            await self._reupload_last_ux()
+            return
         await self._send_simple(bytes([CMD_MODE, mode & 0xFF]))
 
     async def set_color(self, r: int, g: int, b: int) -> None:
