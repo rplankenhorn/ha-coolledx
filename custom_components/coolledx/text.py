@@ -151,4 +151,6 @@ class CoolLEDXText(CoolLEDXEntity, TextEntity):
         if speed is not None:
             self.coordinator.speed = speed
         self.coordinator.is_on = True
-        self.async_write_ha_state()
+        # display_text touches several shared fields (text/color/mode/speed/
+        # brightness); refresh every entity's tile, not just this one.
+        self.coordinator.async_update_listeners()

@@ -31,6 +31,13 @@ class CoolLEDXEntity(Entity):
             manufacturer="CoolLEDX",
         )
 
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to coordinator fan-out so shared-state writes refresh this tile."""
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            self.coordinator.async_add_listener(self.async_write_ha_state)
+        )
+
     @property
     def available(self) -> bool:
         """Return True; reachability is surfaced via write errors, not polling."""

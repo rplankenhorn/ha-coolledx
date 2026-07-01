@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 
 from bleak.backends.device import BLEDevice
 
@@ -11,7 +12,7 @@ from homeassistant.components.bluetooth import (
     async_ble_device_from_address,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryNotReady
 
 from .const import CONF_INVERT
@@ -121,6 +122,35 @@ class CoolLEDXCoordinator:
         self.speed: int = 128
         self.text: str = ""
         self.invert: bool = invert
+
+        # Entities register their ``async_write_ha_state`` here so a single
+        # write path (e.g. the ``display_text`` service, which touches several
+        # shared optimistic fields at once) can refresh every entity's tile,
+        # not just the one that handled the call.
+        self._listeners: list[Callable[[], None]] = []
+
+    # ------------------------------------------------------------------
+    # Listener fan-out
+    # ------------------------------------------------------------------
+
+    @callback
+    def async_add_listener(
+        self, update_callback: Callable[[], None]
+    ) -> Callable[[], None]:
+        """Register an entity's state-writer; returns an unsubscribe callable."""
+        self._listeners.append(update_callback)
+
+        @callback
+        def remove_listener() -> None:
+            self._listeners.remove(update_callback)
+
+        return remove_listener
+
+    @callback
+    def async_update_listeners(self) -> None:
+        """Notify every registered entity to write its (optimistic) state."""
+        for update_callback in list(self._listeners):
+            update_callback()
 
     # ------------------------------------------------------------------
     # Internal helpers
